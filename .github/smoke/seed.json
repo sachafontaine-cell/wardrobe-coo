@@ -1,0 +1,9 @@
+{"items":[
+{"id":"POLO-001","name":"Olive knit polo","type":"POLO","contexts":["WFH","FAMILY","DATE"],"weight":"LIGHT","formality":"SMART","colorFamily":"OLIVE","added":"2026-11-01"},
+{"id":"POLO-002","name":"Navy knit polo","type":"POLO","weight":"LIGHT","formality":"SMART","colorFamily":"NAVY","added":"2026-11-01"},
+{"id":"TEE-001","name":"Cool grey tee","type":"TEE","weight":"LIGHT","formality":"CASUAL","colorFamily":"OTHER","paletteFail":true,"added":"2026-11-01"},
+{"id":"PANT-001","name":"Stone chinos","type":"PANT","weight":"LIGHT","formality":"SMART","colorFamily":"STONE","added":"2026-11-01"},
+{"id":"SHORT-001","name":"Navy shorts","type":"SHORT","weight":"LIGHT","formality":"CASUAL","colorFamily":"NAVY","condition":"FADING","added":"2026-11-01"},
+{"id":"SHOE-001","name":"Tobacco leather sneakers","type":"SHOE","formality":"SMART","colorFamily":"TOBACCO","added":"2026-11-01"},
+{"id":"LAYER-001","name":"Navy overshirt","type":"LAYER","weight":"MID","formality":"SMART","colorFamily":"NAVY","added":"2026-11-01"}
+]}
