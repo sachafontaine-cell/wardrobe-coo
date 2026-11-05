@@ -16,9 +16,10 @@ interface Props {
   onSwapTile: (s: Slot) => void
   onOccasion: (o: Occasion) => void
   onAdd: () => void
+  backup?: { lastBackup?: string; onYes: () => void; onLater: () => void }
 }
 
-export function Today({ data, today, cond, loadFailed, onOk, onUndo, onSwap, onSwapTile, onOccasion, onAdd }: Props) {
+export function Today({ data, today, cond, loadFailed, onOk, onUndo, onSwap, onSwapTile, onOccasion, onAdd, backup }: Props) {
   const items = new Map(data.items.map((i) => [i.id, i]))
   const pick = data.prefs.todayPick?.date === today ? data.prefs.todayPick : undefined
   const outfit = shownOutfit(data, today)
@@ -64,6 +65,16 @@ export function Today({ data, today, cond, loadFailed, onOk, onUndo, onSwap, onS
             <div class="row" style={{ gap: 10 }}>
               <button class="btn btn-primary grow press" onClick={onOk}>OK</button>
               <button class="btn btn-secondary press" style={{ width: 112 }} onClick={onSwap}>Swap</button>
+            </div>
+          )}
+          {logged && backup && (
+            <div class="card card-pad stack" style={{ gap: 10 }}>
+              <div>Back up your closet?</div>
+              <div class="muted">{backup.lastBackup ? 'It has been 4 weeks.' : "You haven't backed up yet."} Save it to Google Drive in one tap.</div>
+              <div class="row" style={{ gap: 10 }}>
+                <button class="btn btn-primary btn-sm press grow" onClick={backup.onYes}>Yes, back up</button>
+                <button class="btn-ghost press" style={{ height: 48 }} onClick={backup.onLater}>Later</button>
+              </div>
             </div>
           )}
         </>

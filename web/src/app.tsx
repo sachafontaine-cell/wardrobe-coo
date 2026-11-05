@@ -5,7 +5,7 @@ import * as Ops from './ops'
 import { deletePhotos, getData, getPhotoBlob, loadFailed, preloadThumbs, putPhoto, replaceAll, update, useData } from './store'
 import { addPhoto, clearDrafts, getDrafts, useDrafts } from './drafts'
 import { processPhoto } from './photo'
-import { todayStr } from './dates'
+import { addDays, daysBetween, todayStr } from './dates'
 import { Icons, Toast } from './ui'
 import { Today } from './screens/today'
 import { Closet } from './screens/closet'
@@ -104,17 +104,41 @@ export function App() {
     update((d) => ({ ...d, items: d.items.map((i) => (i.id === id ? { ...i, hasPhoto: true } : i)) }))
   }
 
-  const exportBackup = async () => {
+  const buildBackup = async (): Promise<File> => {
     const d = getData()
     const toUrl = (b?: Blob) => (b ? new Promise<string>((res) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(b) }) : Promise.resolve(undefined))
     const photos: Record<string, { full?: string; thumb?: string }> = {}
     for (const i of d.items.filter((x) => x.hasPhoto)) photos[i.id] = { full: await toUrl(await getPhotoBlob(i.id, false)), thumb: await toUrl(await getPhotoBlob(i.id, true)) }
-    const file = new File([JSON.stringify({ app: 'wardrobe-coo', v: 1, data: d, photos })], `wardrobe-backup-${today}.json`, { type: 'application/json' })
-    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: 'Wardrobe backup' }); return }
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(file); a.download = file.name; a.click()
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+    return new File([JSON.stringify({ app: 'wardrobe-coo', v: 1, data: d, photos })], `wardrobe-backup-${today}.json`, { type: 'application/json' })
   }
+
+  /** Hands the file to Android's share sheet (pick Drive), or downloads it. Records the date on success. */
+  const shareBackup = async (file: File) => {
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'Wardrobe backup' }) } catch (e) { if ((e as Error).name === 'AbortError') return; throw e }
+    } else {
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(file); a.download = file.name; a.click()
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+    }
+    update((d) => ({ ...d, prefs: { ...d.prefs, lastBackup: today, backupSnoozeUntil: undefined } }))
+    setToast({ text: 'Closet backed up' })
+  }
+
+  const exportBackup = async () => shareBackup(await buildBackup())
+
+  // Every 4 weeks, offer a one-tap backup right after OK. The file is prepared
+  // ahead so "Back up" opens the share sheet instantly.
+  const backupDue = data.items.length > 0 && !!Ops.loggedToday(data, today) &&
+    (!data.prefs.lastBackup || daysBetween(data.prefs.lastBackup, today) >= 28) &&
+    (!data.prefs.backupSnoozeUntil || data.prefs.backupSnoozeUntil <= today)
+  const [prepared, setPrepared] = useState<File | null>(null)
+  useEffect(() => {
+    if (!backupDue) return
+    let live = true
+    buildBackup().then((f) => { if (live) setPrepared(f) })
+    return () => { live = false }
+  }, [backupDue])
 
   const importBackup = async (f: File): Promise<string> => {
     try {
@@ -175,7 +199,12 @@ export function App() {
         onSwap={() => update((d) => Ops.swapOutfit(d, today))}
         onSwapTile={(s) => update((d) => Ops.swapTile(d, today, s, cond))}
         onOccasion={(o) => update((d) => Ops.ensurePick(Ops.setOccasion(d, today, o), today, cond))}
-        onAdd={startAdd} />}
+        onAdd={startAdd}
+        backup={backupDue ? {
+          lastBackup: data.prefs.lastBackup,
+          onYes: () => { (prepared ? shareBackup(prepared) : exportBackup()).catch(() => setToast({ text: "Backup didn't finish. Try again from Profile." })) },
+          onLater: () => update((d) => ({ ...d, prefs: { ...d.prefs, backupSnoozeUntil: addDays(today, 3) } })),
+        } : undefined} />}
       {tab === 'closet' && <Closet data={data} today={today} query={query} setQuery={setQuery}
         onOpen={(id) => push({ kind: 'detail', id })} onAdd={startAdd}
         onFilters={(f) => update((d) => ({ ...d, prefs: { ...d.prefs, closetFilters: f } }))}

@@ -135,6 +135,8 @@ export interface Prefs {
   todayPick?: TodayPick
   closetFilters: Record<string, string[]>
   closetSort: string
+  lastBackup?: string
+  backupSnoozeUntil?: string
 }
 
 export interface AppData { v: 1; items: Item[]; history: HistoryEntry[]; prefs: Prefs }
