@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'preact/hooks'
-import { type AppData, COLOR_BY, type Item, emptyData, typeLabel } from './model'
+import { type AppData, COLOR_BY, type Item, type ItemType, type ReviewEntry, emptyData, profileOf, typeLabel } from './model'
+import { type Action, ask } from './ask'
+import { systemPrompt } from './ask'
+import { checkState, nextReviewDate } from './review'
+import { comparePhotos, fitFlags } from './fit'
+import { AskSheet, type Msg } from './screens/ask'
+import { ClosetCheck } from './screens/check'
+import { FitCheck, type FitResult } from './screens/fit'
+import { getBlob, putBlob } from './store'
 import * as Ops from './ops'
 import { deletePhotos, getData, getPhotoBlob, loadFailed, preloadThumbs, putPhoto, replaceAll, update, useData } from './store'
 import { addPhoto, clearDrafts, getDrafts, useDrafts } from './drafts'
@@ -17,10 +25,10 @@ import { Camera } from './screens/camera'
 import { Review } from './screens/review'
 import { Profile } from './screens/profile'
 
-const VERSION = '0.3.0'
+const VERSION = '0.4.0'
 
 type Tab = 'today' | 'closet' | 'profile'
-type Sub = { kind: 'detail'; id: string } | { kind: 'camera'; replaceId?: string } | { kind: 'review' }
+type Sub = { kind: 'detail'; id: string } | { kind: 'camera'; replaceId?: string } | { kind: 'review' } | { kind: 'ask' } | { kind: 'check'; force?: boolean } | { kind: 'fit' }
 
 /** Daily upkeep and today's pick. Safe to call often. */
 export function refreshDay(): string {
@@ -95,8 +103,23 @@ export function App() {
   const [stack, setStack] = useState<Sub[]>([])
   const [query, setQuery] = useState('')
   const [toast, setToast] = useState<{ text: string; action?: string; run?: () => void } | null>(null)
+  const [msgs, setMsgs] = useState<Msg[]>([])
+  const [askBusy, setAskBusy] = useState(false)
+  const [prefill, setPrefill] = useState<string | undefined>()
   const top = stack[stack.length - 1]
+  const screen = [...stack].reverse().find((s) => s.kind !== 'ask')
+  const askOpen = top?.kind === 'ask'
   const cond = ctx.cond
+  const check = checkState(data, today)
+
+  // Home-screen shortcuts: ?ask=1, ?add=1, ?tab=closet
+  useEffect(() => {
+    const q = new URLSearchParams(location.search)
+    if (q.get('tab') === 'closet') setTab('closet')
+    if (q.get('add')) startAdd()
+    else if (q.get('ask')) openAsk()
+    if (q.toString()) history.replaceState(history.state, '', location.pathname)
+  }, [])
 
   useEffect(() => {
     const onVisible = () => {
@@ -133,6 +156,120 @@ export function App() {
   const goSetup = () => { const depth = stack.length; if (depth) { setStack([]); history.go(-depth) } setTab('profile') }
 
   const startAdd = () => { clearDrafts(); push({ kind: 'camera' }) }
+  const openAsk = (text?: string) => { setPrefill(text); if (top?.kind !== 'ask') push({ kind: 'ask' }) }
+  const addReview = (e: ReviewEntry) => update((d) => ({ ...d, reviews: [...(d.reviews ?? []), e].slice(-200) }))
+
+  // ---- Ask ----
+  const applyAction = (a: Action): { text: string; undo?: () => void } | undefined => {
+    const d = getData()
+    const day = todayStr()
+    const name = (id: string) => d.items.find((i) => i.id === id)?.name ?? id
+    if (a.type === 'donate') {
+      update((x) => Ops.ensurePick(Ops.donate(x, a.id, day), day, getContext().cond))
+      return { text: `Donated ${name(a.id)}`, undo: () => update((x) => Ops.ensurePick(Ops.restore(x, a.id), day, getContext().cond)) }
+    }
+    if (a.type === 'condition') {
+      const before = d.items.find((i) => i.id === a.id)?.condition
+      update((x) => ({ ...x, items: x.items.map((i) => (i.id === a.id ? { ...i, condition: a.value } : i)) }))
+      return { text: `Marked ${name(a.id)} as ${a.value.toLowerCase()}`, undo: () => update((x) => ({ ...x, items: x.items.map((i) => (i.id === a.id && before ? { ...i, condition: before } : i)) })) }
+    }
+    if (a.type === 'tonight') {
+      update((x) => ({ ...x, prefs: { ...x.prefs, tonight: { date: day, text: a.text } } }))
+      return { text: 'Added tonight\'s change to Today', undo: () => update((x) => ({ ...x, prefs: { ...x.prefs, tonight: undefined } })) }
+    }
+    if (a.type === 'add') {
+      const types: ItemType[] = ['POLO', 'TEE', 'SHIRT', 'PANT', 'SHORT', 'LAYER', 'SUIT', 'SHOE', 'SWIM', 'WORKOUT', 'ACCESSORY']
+      if (!types.includes(a.item.type)) return undefined
+      const id = Ops.nextId(d.items, a.item.type)
+      const it: Item = {
+        id, name: a.item.name, type: a.item.type, contexts: a.item.contexts ?? [], fabrics: [], hero: false, paletteFail: false,
+        colorFamily: a.item.colorFamily as Item['colorFamily'], formality: a.item.formality as Item['formality'], weight: a.item.weight as Item['weight'],
+        condition: 'GOOD', status: 'ACTIVE', hasPhoto: false, added: day, eligibleDaysUnworn: 0,
+      }
+      update((x) => Ops.ensurePick({ ...x, items: [...x.items, it] }, day, getContext().cond))
+      return { text: `Added ${it.name} (${id}). Add a photo from Closet.`, undo: () => update((x) => ({ ...x, items: x.items.filter((i) => i.id !== id) })) }
+    }
+    return undefined
+  }
+
+  const sendAsk = async (text: string) => {
+    const s = getSettings()
+    if (!s.geminiKey || !s.geminiModel) return
+    const next: Msg[] = [...msgs, { role: 'user', text }]
+    setMsgs(next); setAskBusy(true); setPrefill(undefined)
+    const d = getData()
+    const day = todayStr()
+    const shown = Ops.shownOutfit(d, day)
+    const sys = systemPrompt(d, {
+      date: day, weather: getContext().weatherLine, occasion: Ops.occasionFor(d, day, getContext().cond),
+      plan: [getContext().plan.detail, getContext().plan.evening && `evening: ${getContext().plan.evening!.title} ${getContext().plan.evening!.time}`].filter(Boolean).join('; '),
+      outfit: shown ? [shown.topId, shown.bottomId, shown.shoeId, ...(shown.layerId ? [shown.layerId] : [])] : [],
+    })
+    try {
+      const ans = await ask(s.geminiKey, s.geminiModel, sys, next.filter((m) => !m.error).map((m) => ({ role: m.role, text: m.text })), new Set(d.items.map((i) => i.id)))
+      const notes = ans.actions.map(applyAction).filter(Boolean) as Msg['notes']
+      setMsgs([...next, { role: 'model', text: ans.text, notes, sources: ans.sources }])
+    } catch (e) {
+      setMsgs([...next, { role: 'model', text: (e as Error).message || "Couldn't reach Gemini.", error: true }])
+    }
+    setAskBusy(false)
+  }
+
+  // ---- Closet check ----
+  const keepItem = (id: string) => {
+    const until = nextReviewDate(todayStr())
+    update((d) => ({ ...d, items: d.items.map((i) => (i.id === id ? { ...i, keptUntil: until } : i)) }))
+    addReview({ date: todayStr(), type: check.big ? 'big_review' : 'closet_check', itemId: id, action: 'keep' })
+  }
+  const donateFromCheck = (id: string) => {
+    update((d) => Ops.ensurePick(Ops.donate(d, id, todayStr()), todayStr(), getContext().cond))
+    addReview({ date: todayStr(), type: check.big ? 'big_review' : 'closet_check', itemId: id, action: 'donate' })
+  }
+  const replaceFromCheck = (item: Item) => {
+    const until = nextReviewDate(todayStr())
+    update((d) => ({ ...d, items: d.items.map((i) => (i.id === item.id ? { ...i, keptUntil: until } : i)) }))
+    addReview({ date: todayStr(), type: check.big ? 'big_review' : 'closet_check', itemId: item.id, action: 'replace' })
+    openAsk(`Find one specific replacement for [[${item.id}]] ${item.name}, with a link. I'll donate the old one when it arrives.`)
+  }
+  const finishCheck = () => {
+    update((d) => ({ ...d, prefs: { ...d.prefs, reviewsDone: [...new Set([...(d.prefs.reviewsDone ?? []), check.reviewDate])].slice(-12), checkSnoozeUntil: undefined } }))
+    pop()
+  }
+
+  // ---- Fit check ----
+  const runFit = async (input: { weightLb?: number; waistIn?: number; front?: File; side?: File }) => {
+    const s = getSettings()
+    let photo
+    const before = await getBlob('fit-front')
+    if (input.front && before && s.geminiKey && s.geminiModel) {
+      try { photo = await comparePhotos(s.geminiKey, s.geminiModel, before, input.front) } catch { photo = undefined }
+    }
+    const result = fitFlags(getData(), input.weightLb, input.waistIn, photo)
+    const day = todayStr()
+    if (input.front) await putBlob('fit-front', input.front)
+    if (input.side) await putBlob('fit-side', input.side)
+    update((d) => {
+      const p = profileOf(d)
+      return {
+        ...d,
+        profile: {
+          ...p, updated: day,
+          weightLb: input.weightLb ?? p.weightLb, waist: input.waistIn ?? p.waist,
+          fitHistory: [...p.fitHistory, { date: day, weightLb: input.weightLb, waistIn: input.waistIn }].slice(-20),
+        },
+      }
+    })
+    addReview({ date: day, type: 'fit_check', action: 'note', notes: result.note })
+    return result
+  }
+  const finishFit = (res: Record<string, FitResult>) => {
+    const month = new Date().toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+    update((d) => ({ ...d, items: d.items.map((i) => (res[i.id] ? { ...i, fitNote: res[i.id] === 'FITS' ? undefined : `${res[i.id] === 'LOOSE' ? 'Loose' : 'Tight'} · ${month}` } : i)) }))
+    Object.entries(res).forEach(([id, r]) => addReview({ date: todayStr(), type: 'fit_check', itemId: id, action: 'fit', notes: r }))
+    const n = Object.values(res).filter((r) => r !== 'FITS').length
+    pop()
+    if (n) setToast({ text: `${n} item${n === 1 ? '' : 's'} marked. Alter or replace from Closet.` })
+  }
 
   const saveAll = async () => {
     const ready = getDrafts().filter((d) => d.photo && d.type)
@@ -175,7 +312,7 @@ export function App() {
     if (!photo) return 'Add a photo first.'
     try {
       const label = labelFile ? await processLabel(labelFile) : undefined
-      const t = await tagQueued(s.geminiKey, s.geminiModel, photo, label)
+      const t = await tagQueued(s.geminiKey, s.geminiModel, photo, label, profileOf(getData()))
       update((d) => ({ ...d, items: d.items.map((i) => (i.id === id ? mergeTagging(i, t, !!label) : i)) }))
       return label ? 'Fibers and brand read from the label.' : 'Filled in the empty fields.'
     } catch (e) {
@@ -231,7 +368,13 @@ export function App() {
   }
 
   // ---- Sub screens ----
-  if (top?.kind === 'camera') {
+  const askSheet = askOpen ? (
+    <AskSheet msgs={msgs} busy={askBusy} items={new Map(data.items.map((i) => [i.id, i]))} prefill={prefill} canAsk={!!settings.geminiKey}
+      onSend={sendAsk} onClose={pop} onSetup={goSetup} onOpenItem={(id) => push({ kind: 'detail', id })} />
+  ) : null
+
+  if (screen?.kind === 'camera') {
+    const top = screen
     const single = !!top.replaceId
     return <Camera single={single} taken={drafts.length}
       onShot={(b) => (single ? replacePhoto(top.replaceId!, b) : addPhoto(b))}
@@ -243,10 +386,23 @@ export function App() {
       }}
       onClose={() => { if (!single && !stack.some((s) => s.kind === 'review')) clearDrafts(); pop() }} />
   }
-  if (top?.kind === 'review') {
+  if (screen?.kind === 'check') {
+    return <>
+      <ClosetCheck data={data} state={check} onBack={pop} onKeep={keepItem} onDonate={donateFromCheck} onReplace={replaceFromCheck}
+        onBestBuy={(t) => openAsk(t)} onFitCheck={() => push({ kind: 'fit' })} onTakePhoto={(id) => push({ kind: 'camera', replaceId: id })} onDone={finishCheck} />
+      {askSheet}
+    </>
+  }
+  if (screen?.kind === 'fit') {
+    const p = profileOf(data)
+    const last = p.fitHistory[p.fitHistory.length - 1]
+    return <FitCheck prev={last ?? (p.weightLb || p.waist ? { date: '', weightLb: p.weightLb, waistIn: p.waist } : undefined)} onBack={pop} onCheck={runFit} onFinish={finishFit} />
+  }
+  if (screen?.kind === 'review') {
     return <Review drafts={drafts} existing={data.items} onAddMore={() => push({ kind: 'camera' })} onSaveAll={saveAll} onBack={pop} onSetup={goSetup} />
   }
-  if (top?.kind === 'detail') {
+  if (screen?.kind === 'detail') {
+    const top = screen
     const item = data.items.find((i) => i.id === top.id)
     if (!item) { setTimeout(pop, 0); return null }
     return (
@@ -261,7 +417,8 @@ export function App() {
           }}
           onTakePhoto={() => push({ kind: 'camera', replaceId: item.id })}
           onPickedPhoto={(f) => replacePhoto(item.id, f)}
-          onRetag={(label) => retag(item.id, label)} />
+          onRetag={(label) => retag(item.id, label)}
+          onFindReplacement={() => openAsk(`Find one specific replacement for [[${item.id}]] ${item.name}, with a link.`)} />
       </div>
     )
   }
@@ -278,6 +435,8 @@ export function App() {
         onSwapTile={(s) => update((d) => Ops.swapTile(d, today, s, cond))}
         onOccasion={(o) => update((d) => Ops.ensurePick(Ops.setOccasion(d, today, o), today, cond))}
         onAdd={startAdd}
+        tonight={data.prefs.tonight?.date === today ? data.prefs.tonight.text : undefined}
+        check={check.showBanner ? { text: `${check.big ? 'Closet review' : 'Closet check'} · ${check.flags.length} item${check.flags.length === 1 ? '' : 's'}`, onOpen: () => push({ kind: 'check' }), onHide: () => update((d) => ({ ...d, prefs: { ...d.prefs, checkSnoozeUntil: addDays(today, 5) } })) } : undefined}
         backup={backupDue && !settings.google ? {
           lastBackup: data.prefs.lastBackup,
           onYes: () => { (prepared ? shareBackup(prepared) : exportBackup()).catch(() => setToast({ text: "Backup didn't finish. Try again from Profile." })) },
@@ -287,8 +446,18 @@ export function App() {
         onOpen={(id) => push({ kind: 'detail', id })} onAdd={startAdd}
         onFilters={(f) => update((d) => ({ ...d, prefs: { ...d.prefs, closetFilters: f } }))}
         onSort={(s) => update((d) => ({ ...d, prefs: { ...d.prefs, closetSort: s } }))} />}
-      {tab === 'profile' && <Profile data={data} version={VERSION} onExport={exportBackup} onImport={importBackup}
-        onBackupNow={backupToDrive} onConnected={() => { refreshContext(true).then(autoBackup) }} />}
+      {tab === 'profile' && <Profile data={data} version={VERSION} onExport={exportBackup} onImport={importBackup} today={today}
+        onBackupNow={backupToDrive} onConnected={() => { refreshContext(true).then(autoBackup) }}
+        onProfile={(p) => {
+          const moved = p.location.lat !== profileOf(getData()).location.lat
+          update((d) => ({ ...d, profile: { ...p, updated: todayStr() } }))
+          if (moved) refreshContext(true)
+        }}
+        onRunCheck={() => push({ kind: 'check', force: true })} onFitCheck={() => push({ kind: 'fit' })} />}
+      {tab !== 'profile' && <button class="fab press" aria-label="Ask" onClick={() => openAsk()}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" /></svg>
+      </button>}
+      {askSheet}
       {toast && <Toast text={toast.text} action={toast.action} onAction={() => { toast.run?.(); setToast(null) }} />}
       <nav class="tabbar">
         {(['today', 'closet', 'profile'] as Tab[]).map((t) => (

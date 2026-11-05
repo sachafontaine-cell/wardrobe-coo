@@ -122,3 +122,7 @@ export function usePhoto(id: string | undefined, thumb: boolean, enabled = true)
 
 /** Warm the thumbnail cache so the Closet grid paints in one frame. */
 export function preloadThumbs(ids: string[]) { ids.forEach((id) => load(pkey(id, true), id, true)) }
+
+/** Other blobs (fit-check reference photos). */
+export async function putBlob(key: string, b: Blob): Promise<void> { if (idb) await set(`x:${key}`, b, idb) }
+export async function getBlob(key: string): Promise<Blob | undefined> { return idb ? get<Blob>(`x:${key}`, idb) : undefined }

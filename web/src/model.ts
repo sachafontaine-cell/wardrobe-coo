@@ -95,6 +95,10 @@ export interface Item {
   lastWorn?: string
   eligibleDaysUnworn: number
   donatedOn?: string
+  /** Closet check: "Keep" until this review date. */
+  keptUntil?: string
+  /** Latest fit check result, e.g. "Loose · Nov 2026". */
+  fitNote?: string
 }
 
 export interface PrevValue { lastWorn?: string; eligibleDaysUnworn: number }
@@ -138,9 +142,56 @@ export interface Prefs {
   closetSort: string
   lastBackup?: string
   backupSnoozeUntil?: string
+  checkSnoozeUntil?: string
+  reviewsDone?: string[]
+  tonight?: { date: string; text: string }
 }
 
-export interface AppData { v: 1; items: Item[]; history: HistoryEntry[]; prefs: Prefs }
+export interface ReviewEntry { date: string; type: 'closet_check' | 'big_review' | 'fit_check'; itemId?: string; action: 'keep' | 'donate' | 'replace' | 'fit' | 'note'; notes?: string }
+
+export interface FitEntry { date: string; weightLb?: number; waistIn?: number }
+
+export interface Profile {
+  updated?: string
+  heightFt?: number; heightIn?: number; weightLb?: number
+  build?: string; torso?: string
+  chest?: number; waist?: number; inseam?: number; neck?: number; sleeve?: number
+  shirtSize?: string; poloSize?: string; teeSize?: string; pantSize?: string; shortSize?: string; shoeSize?: string
+  fitOverall: string; pantBreak: string; rise: string
+  colorSeason: string; coreColors: string[]; accentColors: string[]; avoidColors: string[]; blackRule: boolean
+  styleWords: string[]; hardNos: string[]
+  neverIron: boolean; noDryCleanCasual: boolean
+  fabricUse: string[]; fabricReject: string[]
+  brands1: string[]; brands2: string[]; brands3: string[]
+  lifeMix: Record<'WFH' | 'FAMILY' | 'ACTIVE' | 'EXEC' | 'DATE', number>
+  location: { name: string; lat: number; lon: number }
+  fitHistory: FitEntry[]
+}
+
+export const defaultProfile = (): Profile => ({
+  fitOverall: 'Trim', pantBreak: 'Slight', rise: 'Mid',
+  colorSeason: 'True Autumn',
+  coreColors: ['olive', 'stone', 'cream', 'tobacco', 'camel', 'warm navy', 'espresso', 'dark denim'],
+  accentColors: ['rust', 'burgundy', 'forest green'],
+  avoidColors: ['stark white', 'cool grey', 'icy blue', 'brights', 'loud patterns'],
+  blackRule: true,
+  styleWords: ['Silver Fox', 'refined', 'timeless', 'modern'],
+  hardNos: ['stuffy', 'preppy', 'trends', 'boxy fits', 'shiny fabrics', 'big logos'],
+  neverIron: true, noDryCleanCasual: true,
+  fabricUse: ['cotton-elastane 2–5%', 'cotton-performance blends', 'performance wovens', 'high-twist stretch wool'],
+  fabricReject: ['linen', 'cotton-silk', '100% cotton dress shirts', 'non-iron needing touch-up', 'dry-clean-only casual', 'heavy wool', 'shiny polyester', 'delicates'],
+  brands1: ['Vuori', 'Rhone', 'Mizzen+Main', 'TravisMathew'],
+  brands2: ['Peter Millar', 'Marine Layer', 'Buck Mason', 'Faherty'],
+  brands3: ['Suitsupply', 'Spier & Mackay', 'Outlier', 'Ministry of Supply', 'Asket', 'Lululemon', 'Uniqlo'],
+  lifeMix: { WFH: 35, FAMILY: 35, ACTIVE: 15, EXEC: 10, DATE: 5 },
+  location: { name: 'La Jolla, CA', lat: 32.8328, lon: -117.2713 },
+  fitHistory: [],
+})
+
+export interface AppData { v: 1; items: Item[]; history: HistoryEntry[]; prefs: Prefs; profile?: Profile; reviews?: ReviewEntry[] }
+
+/** Profile with defaults filled in for any missing field. */
+export const profileOf = (d: AppData): Profile => ({ ...defaultProfile(), ...(d.profile ?? {}) })
 
 export const emptyPrefs = (): Prefs => ({ swaps: [], blockedCombos: [], snoozes: {}, occasionOverride: {}, closetFilters: {}, closetSort: 'TYPE' })
 export const emptyData = (): AppData => ({ v: 1, items: [], history: [], prefs: emptyPrefs() })

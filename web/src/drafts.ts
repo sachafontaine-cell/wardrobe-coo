@@ -4,6 +4,8 @@ import type { ColorFamily, Fabric, Fit, Formality, ItemType, Occasion, Pattern, 
 import { type Processed, processLabel, processPhoto } from './photo'
 import { type Tagging, tagQueued } from './gemini'
 import { getSettings } from './settings'
+import { getData } from './store'
+import { profileOf } from './model'
 
 export interface Draft {
   key: string
@@ -79,7 +81,7 @@ export function runTag(key: string) {
   const s = getSettings()
   if (!d?.photo || !s.geminiKey || !s.geminiModel) return
   patch(key, { tagging: 'busy', tagError: undefined })
-  tagQueued(s.geminiKey, s.geminiModel, d.photo.full, d.label)
+  tagQueued(s.geminiKey, s.geminiModel, d.photo.full, d.label, profileOf(getData()))
     .then((t) => applyTagging(key, t))
     .catch((e) => patch(key, { tagging: 'error', tagError: (e as Error).message }))
 }

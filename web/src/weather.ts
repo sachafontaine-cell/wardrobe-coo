@@ -1,8 +1,6 @@
-// La Jolla forecast from Open-Meteo (free, no key).
+// Forecast from Open-Meteo (free, no key) for the Profile location (default La Jolla).
 import type { LayerNeed, WeatherBand } from './picker'
 
-const LAT = 32.8328
-const LON = -117.2713
 
 export interface Weather {
   date: string
@@ -19,12 +17,12 @@ export interface WeatherView { band: WeatherBand; layer: LayerNeed; rainy: boole
 
 interface OpenMeteo { hourly: { time: string[]; temperature_2m: number[]; precipitation_probability: (number | null)[]; cloud_cover_low: (number | null)[] } }
 
-export const weatherUrl = () =>
-  `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}` +
-  '&hourly=temperature_2m,precipitation_probability,cloud_cover_low&timezone=America%2FLos_Angeles&forecast_days=2'
+export const weatherUrl = (lat: number, lon: number) =>
+  `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+  '&hourly=temperature_2m,precipitation_probability,cloud_cover_low&timezone=auto&forecast_days=2'
 
-export async function fetchWeather(date: string): Promise<Weather> {
-  const r = await fetch(weatherUrl())
+export async function fetchWeather(date: string, lat: number, lon: number): Promise<Weather> {
+  const r = await fetch(weatherUrl(lat, lon))
   if (!r.ok) throw new Error('weather ' + r.status)
   return parseWeather((await r.json()) as OpenMeteo, date)
 }
@@ -62,3 +60,34 @@ export function viewWeather(w: Weather): WeatherView {
   if (w.marineUntil !== undefined) parts.push(w.marineUntil >= 24 ? 'Marine layer all morning' : `Marine layer until ${hourLabel(w.marineUntil)}`)
   return { band, layer, rainy: w.rain >= 40, marine: w.marineUntil !== undefined, summary: parts.join(' · ') }
 }
+
+/** Average daily high over the last 30 days, for the twice-yearly season note. */
+export async function pastAverageHigh(lat: number, lon: number): Promise<number> {
+  const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max&past_days=30&forecast_days=1&timezone=auto`)
+  if (!r.ok) throw new Error('weather ' + r.status)
+  const j = (await r.json()) as { daily: { temperature_2m_max: (number | null)[] } }
+  const xs = j.daily.temperature_2m_max.slice(0, 30).filter((x): x is number => typeof x === 'number')
+  if (!xs.length) throw new Error('no history')
+  return xs.reduce((a, b) => a + b, 0) / xs.length
+}
+
+export function seasonNote(avgHigh: number): string {
+  const a = Math.round(avgHigh)
+  if (avgHigh < 18) return `It's been cool (average high ${a}°C). Bring midweight layers and pants forward.`
+  if (avgHigh >= 25) return `It's been hot (average high ${a}°C). Put heavyweight pieces away for now.`
+  return `Steady weather (average high ${a}°C). No changes needed.`
+}
+
+/** Place name to coordinates (Open-Meteo geocoding). */
+export async function geocode(name: string): Promise<{ name: string; lat: number; lon: number } | undefined> {
+  const q = name.split(',')[0].trim()
+  const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=5&language=en&format=json`)
+  if (!r.ok) return undefined
+  const j = (await r.json()) as { results?: { name: string; latitude: number; longitude: number; admin1?: string; country_code?: string }[] }
+  const hint = name.split(',')[1]?.trim().toLowerCase()
+  const hit = j.results?.find((x) => !hint || (x.admin1 ?? '').toLowerCase().startsWith(hint) || (x.country_code ?? '').toLowerCase() === hint || abbr(x.admin1) === hint) ?? j.results?.[0]
+  return hit ? { name: [hit.name, hit.admin1].filter(Boolean).join(', '), lat: hit.latitude, lon: hit.longitude } : undefined
+}
+
+const STATES: Record<string, string> = { california: 'ca', 'new york': 'ny', texas: 'tx', florida: 'fl', washington: 'wa', oregon: 'or', arizona: 'az', nevada: 'nv', massachusetts: 'ma', illinois: 'il', colorado: 'co', ontario: 'on', 'british columbia': 'bc', quebec: 'qc' }
+const abbr = (s?: string) => (s ? STATES[s.toLowerCase()] : undefined)

@@ -5,6 +5,8 @@ import { type CalEvent, fetchEvents } from './google'
 import { type DayConditions, FALLBACK } from './picker'
 import { cacheGet, cacheSet, getSettings } from './settings'
 import { type Weather, fetchWeather, viewWeather } from './weather'
+import { getData } from './store'
+import { profileOf } from './model'
 
 export interface DayContext {
   cond: DayConditions
@@ -56,7 +58,8 @@ export async function refreshContext(force = false): Promise<void> {
   const date = today
   const jobs: Promise<void>[] = []
   if (force || !weather || Date.now() - weather.fetchedAt > 3600_000) {
-    jobs.push(fetchWeather(date).then((w) => { if (date === today) { weather = w; weatherFailed = false; cacheSet('weather', w) } })
+    const loc = profileOf(getData()).location
+    jobs.push(fetchWeather(date, loc.lat, loc.lon).then((w) => { if (date === today) { weather = w; weatherFailed = false; cacheSet('weather', w) } })
       .catch(() => { if (!weather) weatherFailed = true }))
   }
   if (getSettings().google && (force || !cal || Date.now() - cal.fetchedAt > 900_000)) {

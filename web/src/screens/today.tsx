@@ -21,9 +21,11 @@ interface Props {
   onOccasion: (o: Occasion) => void
   onAdd: () => void
   backup?: { lastBackup?: string; onYes: () => void; onLater: () => void }
+  tonight?: string
+  check?: { text: string; onOpen: () => void; onHide: () => void }
 }
 
-export function Today({ data, today, ctx, showSetup, onSetup, onHideSetup, loadFailed, onOk, onUndo, onSwap, onSwapTile, onOccasion, onAdd, backup }: Props) {
+export function Today({ data, today, ctx, showSetup, onSetup, onHideSetup, loadFailed, onOk, onUndo, onSwap, onSwapTile, onOccasion, onAdd, backup, tonight, check }: Props) {
   const items = new Map(data.items.map((i) => [i.id, i]))
   const pick = data.prefs.todayPick?.date === today ? data.prefs.todayPick : undefined
   const outfit = shownOutfit(data, today)
@@ -32,7 +34,7 @@ export function Today({ data, today, ctx, showSetup, onSetup, onHideSetup, loadF
   const occ = occasionFor(data, today, cond)
   const overridden = !!data.prefs.occasionOverride[today]
   const detail = !overridden || occ === ctx.plan.occasion ? ctx.plan.detail : undefined
-  const evening = outfit && ctx.plan.evening ? eveningSwap(outfit, data.items, occ, ctx.plan.evening) : undefined
+  const evening = tonight ?? (outfit && ctx.plan.evening ? eveningSwap(outfit, data.items, occ, ctx.plan.evening) : undefined)
 
   return (
     <div class="main stack">
@@ -51,6 +53,13 @@ export function Today({ data, today, ctx, showSetup, onSetup, onHideSetup, loadF
             <div class="muted">Gemini tagging, calendar and auto backup</div>
           </button>
           <button class="press" style={{ width: 44, height: 44, fontSize: 18 }} aria-label="Hide" onClick={onHideSetup}>✕</button>
+        </div>
+      )}
+
+      {check && (
+        <div class="banner">
+          <button class="press" onClick={check.onOpen}><span>{check.text}</span><span class="open">Open ›</span></button>
+          <button class="x press" aria-label="Hide for 5 days" onClick={check.onHide}>✕</button>
         </div>
       )}
 

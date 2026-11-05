@@ -1,5 +1,5 @@
 // Gemini tagging: one photo (plus an optional care-label photo) in, closet fields out.
-import { COLORS, FABRICS, FITS, FORMALITIES, OCCASIONS, PATTERNS, SEASONS, TYPES, WEIGHTS } from './model'
+import { COLORS, FABRICS, FITS, FORMALITIES, OCCASIONS, PATTERNS, SEASONS, TYPES, WEIGHTS, type Profile, defaultProfile } from './model'
 import type { ColorFamily, Fabric, Fit, Formality, ItemType, Occasion, Pattern, Season, Weight } from './model'
 
 const API = 'https://generativelanguage.googleapis.com/v1beta'
@@ -46,7 +46,7 @@ export async function pickModel(key: string): Promise<string> {
 const list = (opts: readonly { code: string; label: string }[]) => opts.map((o) => `${o.code} (${o.label})`).join(', ')
 const enumOf = (opts: readonly { code: string }[]) => ({ type: 'STRING', enum: opts.map((o) => o.code) })
 
-const PROMPT = `You catalog one garment for Sacha's wardrobe app. Look at the garment photo (and the care label photo if given) and fill the fields. Never guess wildly: leave a field out if you can't tell.
+const promptFor = (p: Profile) => `You catalog one garment for Sacha's wardrobe app. Look at the garment photo (and the care label photo if given) and fill the fields. Never guess wildly: leave a field out if you can't tell.
 
 name: 2–4 words, color + garment, e.g. "Olive knit polo", "Stone chinos", "Tobacco suede loafers".
 type: one of ${list(TYPES)}. Overshirts, blazers, jackets, sweaters, hoodies = LAYER.
@@ -62,7 +62,7 @@ weight: LIGHT for warm days (polos, tees, shorts, thin shirts), MID for mild day
 season: ${list(SEASONS)}.
 contexts: where it fits, from ${list(OCCASIONS)}. EXEC = customer meetings and conferences, WFH = working from home on video, FAMILY = kids and weekends, DATE = dinners out, BEACH, ACTIVE = workout only.
 hero: true if people would notice it repeating: rust, burgundy or forest color, any pattern beyond solid or subtle texture, a visible logo, or a standout piece.
-paletteFail: Sacha is a True Autumn. In palette: olive, stone, cream, tobacco, camel, warm navy, espresso, dark denim; accents rust, burgundy, forest. Avoid near the face: stark white, cool grey, icy blue, brights, loud patterns, and black. Tops and layers outside the palette fail. Bottoms and shoes only fail for brights or loud patterns.
+paletteFail: Sacha is a ${p.colorSeason}. In palette: ${p.coreColors.join(', ')}; accents ${p.accentColors.join(', ')}. Avoid near the face: ${p.avoidColors.join(', ')}${p.blackRule ? ', and black' : ''}. Tops and layers outside the palette fail. Bottoms and shoes only fail for brights or loud patterns.
 failReason: 8 words or fewer, only when paletteFail is true.`
 
 const SCHEMA = {
@@ -84,8 +84,8 @@ const toBase64 = (b: Blob) => new Promise<string>((res, rej) => {
   r.readAsDataURL(b)
 })
 
-export async function tagGarment(key: string, model: string, garment: Blob, label?: Blob): Promise<Tagging> {
-  const parts: object[] = [{ text: PROMPT }, { text: 'Garment photo:' }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(garment) } }]
+export async function tagGarment(key: string, model: string, garment: Blob, label?: Blob, profile: Profile = defaultProfile()): Promise<Tagging> {
+  const parts: object[] = [{ text: promptFor(profile) }, { text: 'Garment photo:' }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(garment) } }]
   if (label) parts.push({ text: 'Care label photo:' }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(label) } })
   const body = JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, temperature: 0.2 } })
   const r = await fetch(`${API}/models/${model}:generateContent?key=${encodeURIComponent(key)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
@@ -120,12 +120,12 @@ const waiting: (() => void)[] = []
 const slot = () => new Promise<void>((res) => { if (running < 2) { running++; res() } else waiting.push(() => { running++; res() }) })
 const release = () => { running--; waiting.shift()?.() }
 
-export async function tagQueued(key: string, model: string, garment: Blob, label?: Blob): Promise<Tagging> {
+export async function tagQueued(key: string, model: string, garment: Blob, label?: Blob, profile?: Profile): Promise<Tagging> {
   await slot()
   try {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await tagGarment(key, model, garment, label)
+        return await tagGarment(key, model, garment, label, profile)
       } catch (e) {
         const s = (e as GeminiError).status
         if ((s === 429 || s === 500 || s === 503) && attempt < 4) { await new Promise((r) => setTimeout(r, 4000 * 2 ** attempt)); continue }

@@ -39,6 +39,7 @@ interface Props {
   item: Item
   canTag: boolean
   onRetag: (label?: File) => Promise<string>
+  onFindReplacement: () => void
   onBack: () => void
   onChange: (i: Item) => void
   onDonate: () => void
@@ -46,7 +47,7 @@ interface Props {
   onPickedPhoto: (f: File) => void
 }
 
-export function ItemDetail({ item, canTag, onRetag, onBack, onChange, onDonate, onTakePhoto, onPickedPhoto }: Props) {
+export function ItemDetail({ item, canTag, onRetag, onFindReplacement, onBack, onChange, onDonate, onTakePhoto, onPickedPhoto }: Props) {
   const [tag, setTag] = useState<Tag | null>(null)
   const [text, setText] = useState<Text | null>(null)
   const [menu, setMenu] = useState(false)
@@ -62,6 +63,7 @@ export function ItemDetail({ item, canTag, onRetag, onBack, onChange, onDonate, 
         <span class="muted">{item.id}</span>
       </div>
       <Picture id={item.id} hasPhoto={item.hasPhoto} type={item.type} color={item.colorFamily} full class="detail-pic" />
+      {item.fitNote && <div class="note">Fit check: {item.fitNote}. Alter or replace.</div>}
       <button style={{ textAlign: 'left' }} onClick={() => setText({ label: 'Name', key: 'name' })}><h1 class="headline">{item.name}</h1></button>
 
       <div class="card">
@@ -99,6 +101,7 @@ export function ItemDetail({ item, canTag, onRetag, onBack, onChange, onDonate, 
         </div>
       )}
       {tagMsg && <div class="muted">{tagMsg}</div>}
+      <button class="btn btn-primary btn-sm press" onClick={onFindReplacement}>Find a replacement</button>
       <input ref={labelRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => {
         const f = (e.target as HTMLInputElement).files?.[0]
         ;(e.target as HTMLInputElement).value = ''

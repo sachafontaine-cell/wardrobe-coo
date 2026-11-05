@@ -69,7 +69,7 @@ export function Closet({ data, today, query, setQuery, onOpen, onAdd, onFilters,
       ) : (
         <div class="grid3">
           {shown.map((i) => {
-            const badge = i.condition === 'WORN' ? ['Worn', 'badge-red'] : i.condition === 'FADING' ? ['Fading', 'badge-red'] : i.paletteFail ? ['Off palette', 'badge-amber'] : undefined
+            const badge = i.condition === 'WORN' ? ['Worn', 'badge-red'] : i.condition === 'FADING' ? ['Fading', 'badge-red'] : i.paletteFail ? ['Off palette', 'badge-amber'] : i.fitNote ? [i.fitNote.split(' ·')[0], 'badge-amber'] : undefined
             return (
               <button key={i.id} class="press" style={{ position: 'relative' }} onClick={() => onOpen(i.id)} aria-label={i.name}>
                 <Picture id={i.id} hasPhoto={i.hasPhoto} type={i.type} color={i.colorFamily} />

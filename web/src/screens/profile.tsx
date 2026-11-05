@@ -1,5 +1,7 @@
 import { useRef, useState } from 'preact/hooks'
-import type { AppData } from '../model'
+import { type AppData, type Profile as ProfileData, profileOf } from '../model'
+import { SECTIONS, SectionSheet } from './profileSections'
+import { nextReviewDate } from '../review'
 import { prettyDate } from '../dates'
 import { pickModel } from '../gemini'
 import { APPS_SCRIPT, connectGoogle, disconnectGoogle } from '../google'
@@ -13,16 +15,40 @@ interface Props {
   onImport: (f: File) => Promise<string>
   onBackupNow: () => Promise<void>
   onConnected: () => void
+  onProfile: (p: ProfileData) => void
+  onRunCheck: () => void
+  onFitCheck: () => void
+  today: string
 }
 
-export function Profile({ data, version, onExport, onImport, onBackupNow, onConnected }: Props) {
+export function Profile({ data, version, onExport, onImport, onBackupNow, onConnected, onProfile, onRunCheck, onFitCheck, today }: Props) {
+  const profile = profileOf(data)
+  const [open, setOpen] = useState<(typeof SECTIONS)[number] | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const [status, setStatus] = useState('')
   const s = useSettings()
   const kv = (k: string, v: string | number) => <div class="kv"><span class="k">{k}</span><span class="v">{v}</span></div>
   return (
     <div class="main stack">
-      <div class="row"><Crest /><h1 class="title">Profile</h1></div>
+      <div class="row">
+        <Crest />
+        <div class="grow">
+          <h1 class="title">Profile</h1>
+          <div class="muted">{profile.updated ? `Last updated ${prettyDate(profile.updated)}` : 'Defaults from your style guide'}</div>
+        </div>
+      </div>
+
+      <div class="card">
+        {SECTIONS.map((s) => (
+          <button key={s.title} class="kv" onClick={() => setOpen(s)}><span>{s.title}</span><span class="v muted">{s.summary(profile)} ›</span></button>
+        ))}
+      </div>
+
+      <div class="card">
+        <div class="kv"><span class="k">Next closet check</span><span class="v">{prettyDate(nextReviewDate(today))}</span></div>
+        <button class="kv" onClick={onRunCheck}><span>Run closet check now</span><span class="v muted">›</span></button>
+        <button class="kv" onClick={onFitCheck}><span>Fit check</span><span class="v muted">›</span></button>
+      </div>
 
       <GeminiCard connected={!!s.geminiKey} model={s.geminiModel} />
       <GoogleCard email={s.google?.email} connected={!!s.google} lastBackup={data.prefs.lastBackup} onBackupNow={onBackupNow} onConnected={onConnected} />
@@ -48,10 +74,7 @@ export function Profile({ data, version, onExport, onImport, onBackupNow, onConn
         }} />
       </div>
 
-      <div class="card card-pad stack" style={{ gap: 8 }}>
-        <div>More settings in update 3</div>
-        <div class="muted">Sizes, colors, style and brands. Your style rules from the spec are already built into the daily pick.</div>
-      </div>
+      {open && <SectionSheet section={open} profile={profile} onClose={() => setOpen(null)} onSave={(p) => { onProfile(p); setOpen(null) }} />}
     </div>
   )
 }
