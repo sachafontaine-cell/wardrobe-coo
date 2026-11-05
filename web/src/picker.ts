@@ -1,13 +1,27 @@
 // Pure outfit picker, ported from the Android version.
-import { COLOR_BY, type Formality, type HistoryEntry, type Item, type Occasion, type Outfit, type Prefs, type Slot, outfitIds, slotOf } from './model'
+import { COLOR_BY, type Formality, type HistoryEntry, type Item, type Occasion, type Outfit, type Prefs, type Slot, outfitIds, slotOf, typeLabel } from './model'
 import { daysBetween, weekday } from './dates'
 
 export type WeatherBand = 'HOT' | 'WARM' | 'MILD' | 'COOL'
 export type LayerNeed = 'NONE' | 'LIGHT' | 'WARM'
-export interface DayConditions { band: WeatherBand; layer: LayerNeed; rainy: boolean; known: boolean }
+export interface DayConditions {
+  band: WeatherBand
+  layer: LayerNeed
+  rainy: boolean
+  /** Weather came from a forecast (not the fallback). */
+  known: boolean
+  marine?: boolean
+  /** A video call today: no tees. */
+  cameraReady?: boolean
+  /** Occasion the calendar implies; a manual pick still wins. */
+  occasion?: Occasion
+}
 
 /** Spec fallback when weather is unavailable: plan for 18–22°C and bring a light layer. */
 export const FALLBACK: DayConditions = { band: 'WARM', layer: 'LIGHT', rainy: false, known: false }
+
+/** Changes when anything that affects the pick changes. */
+export const condKey = (c: DayConditions) => [c.band, c.layer, c.rainy, !!c.cameraReady, c.occasion ?? ''].join('|')
 
 export interface PickResult { outfits: Outfit[]; note: string }
 
@@ -32,12 +46,13 @@ const fitsOccasion = (i: Item, occ: Occasion) => i.contexts.length === 0 || i.co
 /** Near-face rule: tops and layers must be in palette; no black near the face. */
 const nearFaceOk = (i: Item) => !i.paletteFail && i.colorFamily !== 'BLACK'
 
-const RELAX = [
+const RELAX: { topCap: boolean; bottomCap: boolean; combo7: boolean; snooze: boolean; anyContext?: boolean; note: string }[] = [
   { topCap: false, bottomCap: false, combo7: false, snooze: false, note: '' },
   { topCap: true, bottomCap: false, combo7: false, snooze: false, note: 'Top limit relaxed.' },
   { topCap: true, bottomCap: true, combo7: false, snooze: false, note: 'Top and bottom limits relaxed.' },
   { topCap: true, bottomCap: true, combo7: true, snooze: false, note: 'Repeat rule relaxed.' },
   { topCap: true, bottomCap: true, combo7: true, snooze: true, note: 'Repeat rules relaxed.' },
+  { topCap: true, bottomCap: true, combo7: true, snooze: true, anyContext: true, note: 'Closest match for today.' },
 ]
 
 export function pick(all: Item[], history: HistoryEntry[], prefs: Prefs, today: string, occasion: Occasion, cond: DayConditions, max = 6): PickResult {
@@ -57,8 +72,8 @@ export function pick(all: Item[], history: HistoryEntry[], prefs: Prefs, today: 
 
   let fallback: { scored: [Outfit, number][]; note: string } | undefined
   for (const r of RELAX) {
-    const usable = (i: Item) => fitsOccasion(i, occasion) && (r.snooze || !snoozed.has(i.id)) && !(i.hero && within4.has(i.id))
-    const tops = items.filter((i) => slotOf(i.type) === 'TOP' && usable(i) && nearFaceOk(i) && topWeightOk(i.weight, cond) && (r.topCap || (topCounts.get(i.id) ?? 0) < 3))
+    const usable = (i: Item) => (r.anyContext || fitsOccasion(i, occasion)) && (r.snooze || !snoozed.has(i.id)) && !(i.hero && within4.has(i.id))
+    const tops = items.filter((i) => slotOf(i.type) === 'TOP' && usable(i) && nearFaceOk(i) && topWeightOk(i.weight, cond) && !(cond.cameraReady && i.type === 'TEE') && (r.topCap || (topCounts.get(i.id) ?? 0) < 3))
     const bottoms = items.filter((i) => slotOf(i.type) === 'BOTTOM' && usable(i) && bottomOk(i, cond) && (r.bottomCap || (bottomCounts.get(i.id) ?? 0) < 4))
     const shoes = items.filter((i) => slotOf(i.type) === 'SHOES' && usable(i) && !(cond.rainy && i.fabrics.includes('SUEDE')))
     let layers: (Item | undefined)[] = [undefined]
@@ -139,7 +154,7 @@ export function swapSlot(current: Outfit, slot: Slot, all: Item[], prefs: Prefs,
   let bestScore = -1
   for (const c of all) {
     if (c.status !== 'ACTIVE' || slotOf(c.type) !== slot || c.id === cur || skip.includes(c.id) || !fitsOccasion(c, occasion)) continue
-    if (slot === 'TOP' && !(nearFaceOk(c) && topWeightOk(c.weight, cond))) continue
+    if (slot === 'TOP' && !(nearFaceOk(c) && topWeightOk(c.weight, cond) && !(cond.cameraReady && c.type === 'TEE'))) continue
     if (slot === 'BOTTOM' && !bottomOk(c, cond)) continue
     if (slot === 'LAYER' && c.paletteFail) continue
     const o = withSlot(current, slot, c.id)
@@ -156,15 +171,45 @@ export function swapSlot(current: Outfit, slot: Slot, all: Item[], prefs: Prefs,
 export function reason(o: Outfit, items: Map<string, Item>, cond: DayConditions, note: string): string {
   const top = items.get(o.topId)
   const bottom = items.get(o.bottomId)
+  const shoe = items.get(o.shoeId)
   const layer = o.layerId ? items.get(o.layerId) : undefined
   const parts: string[] = []
-  if (top?.colorFamily && bottom?.colorFamily) {
-    const t = COLOR_BY[top.colorFamily].label
-    parts.push(`${t} on ${COLOR_BY[bottom.colorFamily].label.toLowerCase()}`)
+  if (cond.cameraReady && top) parts.push(`${typeLabel(top.type).toLowerCase()} for camera`)
+  if (top?.colorFamily && bottom?.colorFamily && parts.length === 0) {
+    parts.push(`${COLOR_BY[top.colorFamily].label.toLowerCase()} on ${COLOR_BY[bottom.colorFamily].label.toLowerCase()}`)
   }
-  if (layer) parts.push(`${layer.name.toLowerCase()} ${cond.known ? 'for the cool start' : "in case it's cool"}`)
+  if (layer) {
+    const n = layer.name.toLowerCase()
+    parts.push(!cond.known ? `${n} in case it's cool` : cond.marine ? `${n} until the fog lifts` : cond.layer === 'WARM' ? `${n} for the cold` : `${n} for the cool morning`)
+  }
+  if (cond.rainy && shoe) parts.push('closed shoes for rain')
   let line = parts.join(', ')
-  if (line) line += '.'
+  if (line) line = line.charAt(0).toUpperCase() + line.slice(1) + '.'
   if (note) line = line ? `${line} ${note}` : note
   return line
+}
+
+/**
+ * For an evening event, the smallest change that lifts the day's outfit:
+ * dressier shoes and/or a smart layer. Undefined when the outfit already works.
+ */
+export function eveningSwap(o: Outfit, all: Item[], dayOccasion: Occasion, ev: { title: string; time: string }): string | undefined {
+  if (dayOccasion === 'EXEC' || dayOccasion === 'DATE') return undefined
+  const active = all.filter((i) => i.status === 'ACTIVE')
+  const byId = new Map(active.map((i) => [i.id, i]))
+  const lift = (slot: Slot, current?: string) => {
+    const cur = current ? byId.get(current) : undefined
+    const curScore = cur ? formalityFit(cur.formality, 'DATE') + (cur.contexts.includes('DATE') ? 0.2 : 0) : -1
+    let best: Item | undefined
+    let bestScore = curScore
+    for (const i of active) {
+      if (slotOf(i.type) !== slot || i.id === current || i.paletteFail || (i.formality !== 'SMART' && i.formality !== 'BUSINESS')) continue
+      const s = formalityFit(i.formality, 'DATE') + (i.contexts.includes('DATE') ? 0.2 : 0)
+      if (s > bestScore + 0.05) { best = i; bestScore = s }
+    }
+    return best
+  }
+  const picks = [lift('SHOES', o.shoeId), lift('LAYER', o.layerId)].filter(Boolean) as Item[]
+  if (!picks.length) return undefined
+  return `${ev.title} ${ev.time}: swap in ${picks.map((p) => p.name.toLowerCase()).join(' + ')}.`
 }

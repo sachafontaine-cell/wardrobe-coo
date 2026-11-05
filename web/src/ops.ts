@@ -1,9 +1,10 @@
 // State changes as pure functions of AppData, ported from the Android version.
 import { type AppData, type ColorFamily, type HistoryEntry, type Item, type ItemType, type Occasion, type Outfit, type Pattern, type PrevValue, type Slot, TYPES, outfitIds } from './model'
-import { type DayConditions, defaultOccasion, pick, swapSlot } from './picker'
+import { type DayConditions, condKey, defaultOccasion, pick, swapSlot } from './picker'
 import { addDays, daysBetween } from './dates'
 
-export const occasionFor = (d: AppData, today: string): Occasion => d.prefs.occasionOverride[today] ?? defaultOccasion(today)
+export const occasionFor = (d: AppData, today: string, cond?: DayConditions): Occasion =>
+  d.prefs.occasionOverride[today] ?? cond?.occasion ?? defaultOccasion(today)
 
 /** Once per day: count suitable unworn days, drop old history, delete items donated 14+ days ago. */
 export function dailyMaintenance(d: AppData, today: string): { data: AppData; expired: string[] } {
@@ -36,15 +37,16 @@ export function dailyMaintenance(d: AppData, today: string): { data: AppData; ex
 
 /** Today's pick, generated once and cached; regenerated if the occasion changed or a piece is gone. */
 export function ensurePick(d: AppData, today: string, cond: DayConditions, force = false): AppData {
-  const occ = occasionFor(d, today)
+  const occ = occasionFor(d, today, cond)
+  const key = condKey(cond)
   const cached = d.prefs.todayPick
   const logged = d.history.some((h) => h.date === today)
   const active = new Set(d.items.filter((i) => i.status === 'ACTIVE').map((i) => i.id))
-  const valid = !!cached && cached.date === today && cached.occasion === occ && cached.outfits.length > 0 &&
+  const valid = !!cached && cached.date === today && cached.occasion === occ && (cached.condKey ?? key) === key && cached.outfits.length > 0 &&
     cached.outfits.every((o) => outfitIds(o).every((id) => active.has(id)))
   if (!force && (valid || (logged && cached?.date === today))) return d
   const r = pick(d.items, d.history, d.prefs, today, occ, cond)
-  return { ...d, prefs: { ...d.prefs, todayPick: { date: today, occasion: occ, outfits: r.outfits, index: 0, note: r.note, skipped: {} } } }
+  return { ...d, prefs: { ...d.prefs, todayPick: { date: today, occasion: occ, condKey: key, outfits: r.outfits, index: 0, note: r.note, skipped: {} } } }
 }
 
 export function shownOutfit(d: AppData, today: string): Outfit | undefined {

@@ -1,14 +1,18 @@
 import { useState } from 'preact/hooks'
 import { type AppData, type Item, OCCASIONS, type Occasion, type Slot, labelOf } from '../model'
 import { loggedToday, occasionFor, shownOutfit } from '../ops'
-import { type DayConditions, reason } from '../picker'
+import { eveningSwap, reason } from '../picker'
+import type { DayContext } from '../context'
 import { prettyDate } from '../dates'
 import { Crest, Picture } from '../ui'
 
 interface Props {
   data: AppData
   today: string
-  cond: DayConditions
+  ctx: DayContext
+  showSetup: boolean
+  onSetup: () => void
+  onHideSetup: () => void
   loadFailed: boolean
   onOk: () => void
   onUndo: () => void
@@ -19,12 +23,16 @@ interface Props {
   backup?: { lastBackup?: string; onYes: () => void; onLater: () => void }
 }
 
-export function Today({ data, today, cond, loadFailed, onOk, onUndo, onSwap, onSwapTile, onOccasion, onAdd, backup }: Props) {
+export function Today({ data, today, ctx, showSetup, onSetup, onHideSetup, loadFailed, onOk, onUndo, onSwap, onSwapTile, onOccasion, onAdd, backup }: Props) {
   const items = new Map(data.items.map((i) => [i.id, i]))
   const pick = data.prefs.todayPick?.date === today ? data.prefs.todayPick : undefined
   const outfit = shownOutfit(data, today)
   const logged = !!loggedToday(data, today)
-  const occ = occasionFor(data, today)
+  const cond = ctx.cond
+  const occ = occasionFor(data, today, cond)
+  const overridden = !!data.prefs.occasionOverride[today]
+  const detail = !overridden || occ === ctx.plan.occasion ? ctx.plan.detail : undefined
+  const evening = outfit && ctx.plan.evening ? eveningSwap(outfit, data.items, occ, ctx.plan.evening) : undefined
 
   return (
     <div class="main stack">
@@ -32,11 +40,21 @@ export function Today({ data, today, cond, loadFailed, onOk, onUndo, onSwap, onS
         <Crest />
         <div class="grow">
           <h1 class="title">{prettyDate(today)}</h1>
-          {!cond.known && <div class="muted">Weather arrives in the next update</div>}
+          <div class="muted">{ctx.weatherLine ?? (ctx.weatherFailed ? 'Weather unavailable · planning for 18–22°C' : 'Loading weather…')}</div>
         </div>
       </div>
 
-      <OccasionChip current={occ} onPick={onOccasion} />
+      {showSetup && (
+        <div class="card card-pad row" style={{ gap: 8, padding: '10px 6px 10px 14px' }}>
+          <button class="grow" style={{ textAlign: 'left' }} onClick={onSetup}>
+            <div style={{ fontWeight: 600 }}>Finish setup · 2 steps</div>
+            <div class="muted">Gemini tagging, calendar and auto backup</div>
+          </button>
+          <button class="press" style={{ width: 44, height: 44, fontSize: 18 }} aria-label="Hide" onClick={onHideSetup}>✕</button>
+        </div>
+      )}
+
+      <OccasionChip current={occ} detail={detail} onPick={onOccasion} />
 
       {loadFailed ? (
         <div class="card card-pad">I can't read your closet data, so I can't pick an outfit right now.</div>
@@ -56,6 +74,7 @@ export function Today({ data, today, cond, loadFailed, onOk, onUndo, onSwap, onS
             })}
           </div>
           <div style={{ fontSize: 16 }}>{reason(outfit, items, cond, pick?.note ?? '')}</div>
+          {evening && <div class="muted" style={{ fontSize: 15 }}>{evening}</div>}
           {logged ? (
             <div class="row" style={{ gap: 10 }}>
               <div class="btn logged grow">✓&nbsp; Logged</div>
@@ -83,11 +102,11 @@ export function Today({ data, today, cond, loadFailed, onOk, onUndo, onSwap, onS
   )
 }
 
-function OccasionChip({ current, onPick }: { current: Occasion; onPick: (o: Occasion) => void }) {
+function OccasionChip({ current, detail, onPick }: { current: Occasion; detail?: string; onPick: (o: Occasion) => void }) {
   const [open, setOpen] = useState(false)
   return (
     <div style={{ position: 'relative', alignSelf: 'flex-start' }}>
-      <button class="pill press" onClick={() => setOpen(!open)}>{labelOf(OCCASIONS, current)} <span aria-hidden="true">▾</span></button>
+      <button class="pill press" onClick={() => setOpen(!open)}>{labelOf(OCCASIONS, current)}{detail ? ` · ${detail}` : ''} <span aria-hidden="true">▾</span></button>
       {open && (
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 25 }} onClick={() => setOpen(false)} />

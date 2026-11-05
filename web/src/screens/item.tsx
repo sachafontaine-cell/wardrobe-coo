@@ -37,6 +37,8 @@ const DETAILS: Text[] = [
 
 interface Props {
   item: Item
+  canTag: boolean
+  onRetag: (label?: File) => Promise<string>
   onBack: () => void
   onChange: (i: Item) => void
   onDonate: () => void
@@ -44,11 +46,14 @@ interface Props {
   onPickedPhoto: (f: File) => void
 }
 
-export function ItemDetail({ item, onBack, onChange, onDonate, onTakePhoto, onPickedPhoto }: Props) {
+export function ItemDetail({ item, canTag, onRetag, onBack, onChange, onDonate, onTakePhoto, onPickedPhoto }: Props) {
   const [tag, setTag] = useState<Tag | null>(null)
   const [text, setText] = useState<Text | null>(null)
   const [menu, setMenu] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  const labelRef = useRef<HTMLInputElement>(null)
+  const [tagMsg, setTagMsg] = useState('')
+  const run = (label?: File) => { setTagMsg('Tagging…'); onRetag(label).then(setTagMsg) }
 
   return (
     <div class="main stack" style={{ gap: 12, paddingTop: 'calc(env(safe-area-inset-top) + 8px)' }}>
@@ -87,6 +92,18 @@ export function ItemDetail({ item, onBack, onChange, onDonate, onTakePhoto, onPi
         </div>
         <button class="btn btn-danger btn-sm press" style={{ flex: 1 }} onClick={onDonate}>{item.status === 'DONATED' ? 'Restore' : 'Donate'}</button>
       </div>
+      {item.hasPhoto && (
+        <div class="row" style={{ gap: 8 }}>
+          <button class="btn btn-secondary btn-sm press grow" disabled={tagMsg === 'Tagging…'} onClick={() => run()}>{canTag ? 'Auto-tag' : 'Set up auto-tag'}</button>
+          {canTag && <button class="btn btn-secondary btn-sm press grow" disabled={tagMsg === 'Tagging…'} onClick={() => labelRef.current?.click()}>Read care label</button>}
+        </div>
+      )}
+      {tagMsg && <div class="muted">{tagMsg}</div>}
+      <input ref={labelRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => {
+        const f = (e.target as HTMLInputElement).files?.[0]
+        ;(e.target as HTMLInputElement).value = ''
+        if (f) run(f)
+      }} />
       <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => {
         const f = (e.target as HTMLInputElement).files?.[0]
         if (f) onPickedPhoto(f)

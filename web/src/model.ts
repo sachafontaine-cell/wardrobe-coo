@@ -124,6 +124,7 @@ export interface TodayPick {
   note: string
   shown?: Outfit
   skipped: Partial<Record<Slot, string[]>>
+  condKey?: string
 }
 
 export interface Prefs {

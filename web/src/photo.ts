@@ -34,3 +34,19 @@ export async function processPhoto(file: Blob): Promise<Processed> {
     bmp.close()
   }
 }
+
+/** Care label: keep the whole frame (no square crop) so text isn't cut, longest side 1280. */
+export async function processLabel(file: Blob): Promise<Blob> {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' })
+  try {
+    const scale = Math.min(1, 1280 / Math.max(bmp.width, bmp.height))
+    const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale)
+    const canvas = new OffscreenCanvas(w, h)
+    const ctx = canvas.getContext('2d')!
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(bmp, 0, 0, w, h)
+    return await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 })
+  } finally {
+    bmp.close()
+  }
+}
