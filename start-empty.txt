@@ -1,0 +1,7 @@
+Starting: Intent { cmp=com.fontaine.wardrobe/.MainActivity }
+Status: ok
+LaunchState: COLD
+Activity: com.fontaine.wardrobe/.MainActivity
+TotalTime: 9470
+WaitTime: 9690
+Complete
