@@ -174,7 +174,7 @@ private fun EmptyState(data: AppData, onAdd: () -> Unit) {
         "shoes".takeIf { active.none { it.slot == Slot.SHOES } },
     )
     val text = if (missing.isNotEmpty())
-        "Add ${missing.joinToString(", ")} to get your first outfit."
+        "Add ${if (missing.size > 1) missing.dropLast(1).joinToString(", ") + " and " + missing.last() else missing.first()} to get your first outfit."
     else "Nothing fits today's rules. Add a few more pieces, or change today's occasion."
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {

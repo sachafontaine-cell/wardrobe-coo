@@ -16,6 +16,16 @@ adb shell am start -W -n $PKG/.MainActivity | tee smoke-out/start-seeded.txt
 sleep 5
 adb exec-out screencap -p > smoke-out/2-today.png
 SIZE=$(adb shell wm size | grep -o '[0-9]*x[0-9]*' | tail -1); W=${SIZE%x*}; H=${SIZE#*x}
+tap() { adb shell input tap $(python3 -c "print(int($W*$1), int($H*$2))"); sleep ${3:-2}; }
+tap 0.35 0.7375 2; adb exec-out screencap -p > smoke-out/2b-today-logged.png
+tap 0.62 0.7375 2   # Undo
+adb shell input tap $((W/2)) $((H-150)); sleep 3
+tap 0.183 0.341 3; adb exec-out screencap -p > smoke-out/2c-item-detail.png
+adb shell input keyevent KEYCODE_BACK; sleep 2
+tap 0.903 0.104 4; adb exec-out screencap -p > smoke-out/2d-camera.png
+adb shell input keyevent KEYCODE_BACK; sleep 1
+adb shell input keyevent KEYCODE_BACK; sleep 2
+adb shell input tap $((W/6)) $((H-150)); sleep 2
 # Tap OK (left part of the button row is about 60% down on this layout) is fragile; instead tap tabs.
 adb shell input tap $((W/2)) $((H-150)); sleep 3
 adb exec-out screencap -p > smoke-out/3-closet.png
