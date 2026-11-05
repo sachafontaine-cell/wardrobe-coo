@@ -117,7 +117,7 @@ fun ItemDetailScreen(
             Column {
                 TAGS.forEachIndexed { idx, t ->
                     val v = t.get(item)
-                    KeyValueRow(t.label, if (v.isEmpty()) "Not set" else v.joinToString(" · ") { it.label }) { editingTag = t }
+                    KeyValueRow(t.label, if (v.isEmpty()) "Not set" else v.joinToString(" · ") { it.label }, onClick = { editingTag = t })
                     if (idx < TAGS.lastIndex) RowSpacer()
                 }
             }
