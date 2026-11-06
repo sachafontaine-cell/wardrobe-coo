@@ -1,4 +1,4 @@
-// Gemini tagging: one photo (plus an optional care-label photo) in, closet fields out.
+// Gemini tagging: one garment photo (plus any label photos) in, closet fields out.
 import { COLORS, FABRICS, FITS, FORMALITIES, OCCASIONS, PATTERNS, SEASONS, TYPES, WEIGHTS, type Profile, defaultProfile } from './model'
 import type { ColorFamily, Fabric, Fit, Formality, ItemType, Occasion, Pattern, Season, Weight } from './model'
 
@@ -14,6 +14,8 @@ export interface Tagging {
   blend?: string
   fabricEstimated?: boolean
   brand?: string
+  size?: string
+  care?: string
   fit?: Fit
   formality?: Formality
   weight?: Weight
@@ -46,16 +48,18 @@ export async function pickModel(key: string): Promise<string> {
 const list = (opts: readonly { code: string; label: string }[]) => opts.map((o) => `${o.code} (${o.label})`).join(', ')
 const enumOf = (opts: readonly { code: string }[]) => ({ type: 'STRING', enum: opts.map((o) => o.code) })
 
-const promptFor = (p: Profile) => `You catalog one garment for Sacha's wardrobe app. Look at the garment photo (and the care label photo if given) and fill the fields. Never guess wildly: leave a field out if you can't tell.
+const promptFor = (p: Profile) => `You catalog one garment for Sacha's wardrobe app. Look at the garment photo (and any label photos: care label, size tag, brand tag) and fill the fields. Never guess wildly: leave a field out if you can't tell.
 
 name: 2–4 words, color + garment, e.g. "Olive knit polo", "Stone chinos", "Tobacco suede loafers".
 type: one of ${list(TYPES)}. Overshirts, blazers, jackets, sweaters, hoodies = LAYER.
 colorFamily: closest of ${list(COLORS)}. Cool grey, stark white, icy blue and brights = OTHER (or BLACK).
 exactColor: plain words, e.g. "deep olive".
 pattern: ${list(PATTERNS)}. Subtle knit or pique texture = TEXTURE.
-fabrics: every fiber present, from ${list(FABRICS)}. Spandex/Lycra = ELASTANE, merino = WOOL, rayon/modal/lyocell/Tencel = VISCOSE. If a care label photo is given, read fibers, percentages and brand from it and set fabricEstimated false. Otherwise estimate from the look and set fabricEstimated true.
+fabrics: every fiber present, from ${list(FABRICS)}. Spandex/Lycra = ELASTANE, merino = WOOL, rayon/modal/lyocell/Tencel = VISCOSE. If label photos are given, read fibers and percentages from them and set fabricEstimated false. Otherwise estimate from the look and set fabricEstimated true.
 blend: the exact label text for fibers, e.g. "96% cotton / 4% elastane". Only when read from a label.
-brand: only if clearly visible.
+brand: from a label or a clearly visible logo.
+size: exactly as printed on a label, e.g. "M", "L Tall", "32x30", "40R", "10.5". US size if several are listed. Only from a label.
+care: short wash instructions from a care label, e.g. "Machine wash cold, tumble dry low" or "Dry clean only". Only from a label.
 fit: ${list(FITS)}.
 formality: ${list(FORMALITIES)}.
 weight: LIGHT for warm days (polos, tees, shorts, thin shirts), MID for mild days (overshirts, heavier chinos, denim), HEAVY for cold (sweaters, jackets).
@@ -70,7 +74,7 @@ const SCHEMA = {
   properties: {
     name: { type: 'STRING' }, type: enumOf(TYPES), colorFamily: enumOf(COLORS), exactColor: { type: 'STRING' },
     pattern: enumOf(PATTERNS), fabrics: { type: 'ARRAY', items: enumOf(FABRICS) }, blend: { type: 'STRING' },
-    fabricEstimated: { type: 'BOOLEAN' }, brand: { type: 'STRING' }, fit: enumOf(FITS), formality: enumOf(FORMALITIES),
+    fabricEstimated: { type: 'BOOLEAN' }, brand: { type: 'STRING' }, size: { type: 'STRING' }, care: { type: 'STRING' }, fit: enumOf(FITS), formality: enumOf(FORMALITIES),
     weight: enumOf(WEIGHTS), season: enumOf(SEASONS), contexts: { type: 'ARRAY', items: enumOf(OCCASIONS) },
     hero: { type: 'BOOLEAN' }, paletteFail: { type: 'BOOLEAN' }, failReason: { type: 'STRING' },
   },
@@ -84,9 +88,9 @@ const toBase64 = (b: Blob) => new Promise<string>((res, rej) => {
   r.readAsDataURL(b)
 })
 
-export async function tagGarment(key: string, model: string, garment: Blob, label?: Blob, profile: Profile = defaultProfile()): Promise<Tagging> {
+export async function tagGarment(key: string, model: string, garment: Blob, labels: Blob[] = [], profile: Profile = defaultProfile()): Promise<Tagging> {
   const parts: object[] = [{ text: promptFor(profile) }, { text: 'Garment photo:' }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(garment) } }]
-  if (label) parts.push({ text: 'Care label photo:' }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(label) } })
+  for (const [n, label] of labels.slice(0, 4).entries()) parts.push({ text: `Label photo ${n + 1}:` }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(label) } })
   const body = JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, temperature: 0.2 } })
   const r = await fetch(`${API}/models/${model}:generateContent?key=${encodeURIComponent(key)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
   if (!r.ok) throw new GeminiError(r.status === 429 ? 'Gemini is busy' : `Gemini error ${r.status}`, r.status)
@@ -105,7 +109,7 @@ function clean(raw: Record<string, unknown>): Tagging {
   const t: Tagging = {
     name: str(raw.name, 40), type: one(TYPES, raw.type), colorFamily: one(COLORS, raw.colorFamily), exactColor: str(raw.exactColor),
     pattern: one(PATTERNS, raw.pattern), fabrics: many(FABRICS, raw.fabrics), blend: str(raw.blend), fabricEstimated: bool(raw.fabricEstimated),
-    brand: str(raw.brand), fit: one(FITS, raw.fit), formality: one(FORMALITIES, raw.formality), weight: one(WEIGHTS, raw.weight),
+    brand: str(raw.brand), size: str(raw.size, 20), care: str(raw.care, 80), fit: one(FITS, raw.fit), formality: one(FORMALITIES, raw.formality), weight: one(WEIGHTS, raw.weight),
     season: one(SEASONS, raw.season), contexts: many(OCCASIONS, raw.contexts), hero: bool(raw.hero), paletteFail: bool(raw.paletteFail),
     failReason: raw.paletteFail === true ? str(raw.failReason, 60) : undefined,
   }
@@ -120,12 +124,12 @@ const waiting: (() => void)[] = []
 const slot = () => new Promise<void>((res) => { if (running < 2) { running++; res() } else waiting.push(() => { running++; res() }) })
 const release = () => { running--; waiting.shift()?.() }
 
-export async function tagQueued(key: string, model: string, garment: Blob, label?: Blob, profile?: Profile): Promise<Tagging> {
+export async function tagQueued(key: string, model: string, garment: Blob, labels: Blob[] = [], profile?: Profile): Promise<Tagging> {
   await slot()
   try {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await tagGarment(key, model, garment, label, profile)
+        return await tagGarment(key, model, garment, labels, profile)
       } catch (e) {
         const s = (e as GeminiError).status
         if ((s === 429 || s === 500 || s === 503) && attempt < 4) { await new Promise((r) => setTimeout(r, 4000 * 2 ** attempt)); continue }

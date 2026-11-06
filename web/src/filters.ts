@@ -44,7 +44,7 @@ export function applyFilters(items: Item[], filters: Record<string, string[]>, q
       const v = g.value(i, today)
       return g.matchAll ? picked.every((p) => v.includes(p)) : v.some((x) => picked.includes(x))
     }) &&
-    (!q || [i.name, i.brand, i.exactColor, i.colorFamily ? COLOR_BY[i.colorFamily].label : '', i.blend, i.fabrics.join(' '), i.notes]
+    (!q || [i.name, i.brand, i.size, i.care, i.exactColor, i.colorFamily ? COLOR_BY[i.colorFamily].label : '', i.blend, i.fabrics.join(' '), i.notes]
       .some((s) => (s ?? '').toLowerCase().includes(q))))
 }
 

@@ -10,7 +10,7 @@ import { FitCheck, type FitResult } from './screens/fit'
 import { getBlob, putBlob } from './store'
 import * as Ops from './ops'
 import { deletePhotos, getData, getPhotoBlob, loadFailed, preloadThumbs, putPhoto, replaceAll, update, useData } from './store'
-import { addPhoto, clearDrafts, getDrafts, useDrafts } from './drafts'
+import { addLabel, addPhoto, clearDrafts, getDrafts, releaseDeferred, useDrafts } from './drafts'
 import { processLabel, processPhoto } from './photo'
 import { addDays, daysBetween, todayStr } from './dates'
 import { getContext, onContextChange, refreshContext, setDay, useContext } from './context'
@@ -50,10 +50,24 @@ onContextChange(() => update((d) => Ops.ensurePick(d, todayStr(), getContext().c
 const toDataUrl = (b?: Blob) =>
   b ? new Promise<string>((res) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.readAsDataURL(b) }) : Promise.resolve(undefined)
 
+const labelKey = (id: string, n: number) => `label:${id}:${n}`
+async function labelBlobs(item: Item): Promise<Blob[]> {
+  const out: Blob[] = []
+  for (let n = 0; n < (item.labels ?? 0); n++) { const b = await getBlob(labelKey(item.id, n)); if (b) out.push(b) }
+  return out
+}
+
 async function backupJson(): Promise<string> {
   const d = getData()
-  const photos: Record<string, { full?: string; thumb?: string }> = {}
-  for (const i of d.items.filter((x) => x.hasPhoto)) photos[i.id] = { full: await toDataUrl(await getPhotoBlob(i.id, false)), thumb: await toDataUrl(await getPhotoBlob(i.id, true)) }
+  const photos: Record<string, { full?: string; thumb?: string; labels?: string[] }> = {}
+  for (const i of d.items) {
+    if (!i.hasPhoto && !i.labels) continue
+    const labels = await Promise.all((await labelBlobs(i)).map((b) => toDataUrl(b)))
+    photos[i.id] = {
+      ...(i.hasPhoto ? { full: await toDataUrl(await getPhotoBlob(i.id, false)), thumb: await toDataUrl(await getPhotoBlob(i.id, true)) } : {}),
+      ...(labels.length ? { labels: labels as string[] } : {}),
+    }
+  }
   // The Google link travels with the backup so a restore reconnects; the Gemini key does not.
   return JSON.stringify({ app: 'wardrobe-coo', v: 1, data: d, photos, google: getSettings().google })
 }
@@ -68,7 +82,10 @@ function mergeTagging(item: Item, t: Tagging, fromLabel: boolean): Item {
   }
   fill('colorFamily', t.colorFamily); fill('exactColor', t.exactColor); fill('pattern', t.pattern); fill('fit', t.fit)
   fill('formality', t.formality); fill('weight', t.weight); fill('season', t.season); fill('contexts', t.contexts); fill('brand', t.brand)
-  if (fromLabel) { if (t.fabrics?.length) out.fabrics = t.fabrics; if (t.blend) out.blend = t.blend; if (t.brand) out.brand = t.brand }
+  if (fromLabel) {
+    if (t.fabrics?.length) out.fabrics = t.fabrics
+    for (const k of ['blend', 'brand', 'size', 'care'] as const) if (t[k]) out[k] = t[k]
+  }
   else { fill('fabrics', t.fabrics); fill('blend', t.blend) }
   if (t.paletteFail && !item.paletteFail) { out.paletteFail = true; out.failReason = t.failReason }
   if (t.hero && !item.hero) out.hero = true
@@ -280,11 +297,12 @@ export function App() {
       const id = Ops.nextId(getData().items, d.type!, taken)
       taken.push(id)
       await putPhoto(id, d.photo!.full, d.photo!.thumb)
+      await Promise.all(d.labels.map((l, n) => putBlob(labelKey(id, n), l.blob)))
       const color = d.colorFamily && d.colorFamily !== 'OTHER' ? COLOR_BY[d.colorFamily].label + ' ' : ''
       added.push({
         id, name: d.name.trim() || (color + typeLabel(d.type!).toLowerCase()).replace(/^./, (c) => c.toUpperCase()),
         type: d.type!, contexts: d.contexts, weight: d.weight, formality: d.formality, colorFamily: d.colorFamily, exactColor: d.exactColor,
-        pattern: d.pattern, fabrics: d.fabrics, blend: d.blend, brand: d.brand, fit: d.fit, season: d.season,
+        pattern: d.pattern, fabrics: d.fabrics, blend: d.blend, brand: d.brand, size: d.size, care: d.care, labels: d.labels.length || undefined, fit: d.fit, season: d.season,
         hero: d.hero, paletteFail: d.paletteFail, failReason: d.paletteFail ? d.failReason : undefined,
         condition: 'GOOD', status: 'ACTIVE', hasPhoto: true, added: day, eligibleDaysUnworn: 0,
       })
@@ -305,16 +323,27 @@ export function App() {
   }
 
   /** Re-tag a saved item from its photo, or from a care label photo. Fills empty fields only. */
-  const retag = async (id: string, labelFile?: File): Promise<string> => {
+  /** Saves a label photo with the item, then re-reads all its labels if Gemini is connected. */
+  const addItemLabel = async (id: string, file: File): Promise<string> => {
+    const item = getData().items.find((i) => i.id === id)
+    if (!item) return ''
+    const n = item.labels ?? 0
+    try { await putBlob(labelKey(id, n), await processLabel(file)) } catch { return "Couldn't read that photo." }
+    update((d) => ({ ...d, items: d.items.map((i) => (i.id === id ? { ...i, labels: n + 1 } : i)) }))
+    return getSettings().geminiKey ? retag(id) : 'Label saved.'
+  }
+
+  const retag = async (id: string): Promise<string> => {
     const s = getSettings()
     if (!s.geminiKey || !s.geminiModel) { goSetup(); return '' }
+    const item = getData().items.find((i) => i.id === id)
     const photo = await getPhotoBlob(id, false)
-    if (!photo) return 'Add a photo first.'
+    if (!photo || !item) return 'Add a photo first.'
     try {
-      const label = labelFile ? await processLabel(labelFile) : undefined
-      const t = await tagQueued(s.geminiKey, s.geminiModel, photo, label, profileOf(getData()))
-      update((d) => ({ ...d, items: d.items.map((i) => (i.id === id ? mergeTagging(i, t, !!label) : i)) }))
-      return label ? 'Fibers and brand read from the label.' : 'Filled in the empty fields.'
+      const labels = await labelBlobs(item)
+      const t = await tagQueued(s.geminiKey, s.geminiModel, photo, labels, profileOf(getData()))
+      update((d) => ({ ...d, items: d.items.map((i) => (i.id === id ? mergeTagging(i, t, labels.length > 0) : i)) }))
+      return labels.length ? 'Read from the labels: fibers, size, brand and care.' : 'Filled in the empty fields.'
     } catch (e) {
       return `Couldn't tag: ${(e as Error).message}`
     }
@@ -354,8 +383,9 @@ export function App() {
     try {
       const j = JSON.parse(await f.text())
       if (j.app !== 'wardrobe-coo' || !j.data?.items) return "That file isn't a Wardrobe backup."
-      for (const [id, p] of Object.entries<{ full?: string; thumb?: string }>(j.photos ?? {})) {
+      for (const [id, p] of Object.entries<{ full?: string; thumb?: string; labels?: string[] }>(j.photos ?? {})) {
         if (p.full && p.thumb) await putPhoto(id, await (await fetch(p.full)).blob(), await (await fetch(p.thumb)).blob())
+        for (const [n, url] of (p.labels ?? []).entries()) await putBlob(labelKey(id, n), await (await fetch(url)).blob())
       }
       replaceAll({ ...emptyData(), ...j.data } as AppData)
       if (j.google && !getSettings().google) setSettings({ google: j.google })
@@ -376,15 +406,20 @@ export function App() {
   if (screen?.kind === 'camera') {
     const top = screen
     const single = !!top.replaceId
-    return <Camera single={single} taken={drafts.length}
-      onShot={(b) => (single ? replacePhoto(top.replaceId!, b) : addPhoto(b))}
-      onPicked={(files) => (single ? replacePhoto(top.replaceId!, files[0]) : files.forEach(addPhoto))}
+    return <Camera single={single} items={drafts.length} labels={drafts.reduce((n, d) => n + d.labels.length + d.labelsPending, 0)}
+      onShot={(b, kind) => (single ? replacePhoto(top.replaceId!, b) : kind === 'label' ? addLabel(b) : addPhoto(b, true))}
+      onPicked={(files, kind) => (single ? replacePhoto(top.replaceId!, files[0]) : files.forEach((f) => (kind === 'label' ? addLabel(f) : addPhoto(f, true))))}
       onDone={() => {
-        if (single) pop()
-        else if (stack[stack.length - 2]?.kind === 'review') pop()
+        if (single) { pop(); return }
+        releaseDeferred()
+        if (stack[stack.length - 2]?.kind === 'review') pop()
         else replaceTop({ kind: 'review' })
       }}
-      onClose={() => { if (!single && !stack.some((s) => s.kind === 'review')) clearDrafts(); pop() }} />
+      onClose={() => {
+        if (!single && !stack.some((s) => s.kind === 'review')) clearDrafts()
+        else releaseDeferred()
+        pop()
+      }} />
   }
   if (screen?.kind === 'check') {
     return <>
@@ -417,7 +452,8 @@ export function App() {
           }}
           onTakePhoto={() => push({ kind: 'camera', replaceId: item.id })}
           onPickedPhoto={(f) => replacePhoto(item.id, f)}
-          onRetag={(label) => retag(item.id, label)}
+          onRetag={() => retag(item.id)} onAddLabel={(f) => addItemLabel(item.id, f)}
+          labelUrl={(n) => getBlob(labelKey(item.id, n)).then((b) => (b ? URL.createObjectURL(b) : undefined))}
           onFindReplacement={() => openAsk(`Find one specific replacement for [[${item.id}]] ${item.name}, with a link.`)} />
       </div>
     )

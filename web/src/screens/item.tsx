@@ -1,4 +1,4 @@
-import { useRef, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import {
   COLORS, CONDITIONS, FABRICS, FITS, FORMALITIES, type Item, OCCASIONS, type Opt, PATTERNS, SEASONS, STATUSES, TYPES, WEIGHTS,
 } from '../model'
@@ -30,15 +30,18 @@ const TAGS: Tag[] = [
   single('Status', STATUSES, 'status', true),
 ]
 
-interface Text { label: string; key: 'name' | 'brand' | 'exactColor' | 'blend' | 'notes' }
+interface Text { label: string; key: 'name' | 'brand' | 'size' | 'exactColor' | 'blend' | 'care' | 'notes' }
 const DETAILS: Text[] = [
-  { label: 'Brand', key: 'brand' }, { label: 'Exact color', key: 'exactColor' }, { label: 'Blend', key: 'blend' }, { label: 'Notes', key: 'notes' },
+  { label: 'Brand', key: 'brand' }, { label: 'Size', key: 'size' }, { label: 'Exact color', key: 'exactColor' }, { label: 'Blend', key: 'blend' },
+  { label: 'Care', key: 'care' }, { label: 'Notes', key: 'notes' },
 ]
 
 interface Props {
   item: Item
   canTag: boolean
-  onRetag: (label?: File) => Promise<string>
+  onRetag: () => Promise<string>
+  onAddLabel: (f: File) => Promise<string>
+  labelUrl: (n: number) => Promise<string | undefined>
   onFindReplacement: () => void
   onBack: () => void
   onChange: (i: Item) => void
@@ -47,14 +50,27 @@ interface Props {
   onPickedPhoto: (f: File) => void
 }
 
-export function ItemDetail({ item, canTag, onRetag, onFindReplacement, onBack, onChange, onDonate, onTakePhoto, onPickedPhoto }: Props) {
+export function ItemDetail({ item, canTag, onRetag, onAddLabel, labelUrl, onFindReplacement, onBack, onChange, onDonate, onTakePhoto, onPickedPhoto }: Props) {
   const [tag, setTag] = useState<Tag | null>(null)
   const [text, setText] = useState<Text | null>(null)
   const [menu, setMenu] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const labelRef = useRef<HTMLInputElement>(null)
   const [tagMsg, setTagMsg] = useState('')
-  const run = (label?: File) => { setTagMsg('Tagging…'); onRetag(label).then(setTagMsg) }
+  const run = (label?: File) => { setTagMsg(label ? 'Reading the label…' : 'Tagging…'); (label ? onAddLabel(label) : onRetag()).then(setTagMsg) }
+  const busy = tagMsg === 'Tagging…' || tagMsg === 'Reading the label…'
+  const [labelUrls, setLabelUrls] = useState<string[]>([])
+  const [viewing, setViewing] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    const made: string[] = []
+    Promise.all(Array.from({ length: item.labels ?? 0 }, (_, n) => labelUrl(n))).then((urls) => {
+      const ok = urls.filter(Boolean) as string[]
+      made.push(...ok)
+      if (live) setLabelUrls(ok)
+    })
+    return () => { live = false; made.forEach((u) => URL.revokeObjectURL(u)) }
+  }, [item.id, item.labels])
 
   return (
     <div class="main stack" style={{ gap: 12, paddingTop: 'calc(env(safe-area-inset-top) + 8px)' }}>
@@ -72,6 +88,14 @@ export function ItemDetail({ item, canTag, onRetag, onFindReplacement, onBack, o
           const label = v.length ? t.options.filter((o) => v.includes(o.code)).map((o) => o.label).join(' · ') : 'Not set'
           return <button key={t.label} class="kv" onClick={() => setTag(t)}><span class="k">{t.label}</span><span class="v">{label} ›</span></button>
         })}
+      </div>
+      <div class="labels-row">
+        <span class="label" style={{ marginRight: 4 }}>Labels</span>
+        {labelUrls.map((u, n) => (
+          <button key={u} class="label-thumb press" onClick={() => setViewing(u)} aria-label={`View label ${n + 1}`}><img src={u} alt="" /></button>
+        ))}
+        <button class="label-add press" disabled={busy} aria-label="Add label photo" onClick={() => labelRef.current?.click()}>+</button>
+        {!labelUrls.length && <span class="muted">Add the care or size tag</span>}
       </div>
       <div class="card">
         {DETAILS.map((f) => (
@@ -96,8 +120,8 @@ export function ItemDetail({ item, canTag, onRetag, onFindReplacement, onBack, o
       </div>
       {item.hasPhoto && (
         <div class="row" style={{ gap: 8 }}>
-          <button class="btn btn-secondary btn-sm press grow" disabled={tagMsg === 'Tagging…'} onClick={() => run()}>{canTag ? 'Auto-tag' : 'Set up auto-tag'}</button>
-          {canTag && <button class="btn btn-secondary btn-sm press grow" disabled={tagMsg === 'Tagging…'} onClick={() => labelRef.current?.click()}>Read care label</button>}
+          <button class="btn btn-secondary btn-sm press grow" disabled={busy} onClick={() => run()}>{canTag ? 'Auto-tag' : 'Set up auto-tag'}</button>
+          <button class="btn btn-secondary btn-sm press grow" disabled={busy} onClick={() => labelRef.current?.click()}>Add label photo</button>
         </div>
       )}
       {tagMsg && <div class="muted">{tagMsg}</div>}
@@ -113,6 +137,7 @@ export function ItemDetail({ item, canTag, onRetag, onFindReplacement, onBack, o
         ;(e.target as HTMLInputElement).value = ''
       }} />
 
+      {viewing && <div class="viewer" onClick={() => setViewing(null)}><img src={viewing} alt="Label" /></div>}
       {tag && <TagSheet tag={tag} item={item} onSave={(i) => { onChange(i); setTag(null) }} onClose={() => setTag(null)} />}
       {text && <TextSheet field={text} item={item} onSave={(i) => { onChange(i); setText(null) }} onClose={() => setText(null)} />}
     </div>

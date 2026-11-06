@@ -88,6 +88,10 @@ export interface Item {
   brand?: string
   exactColor?: string
   blend?: string
+  size?: string
+  care?: string
+  /** Number of label photos stored for this item. */
+  labels?: number
   notes?: string
   hasPhoto: boolean
   photoRev?: number

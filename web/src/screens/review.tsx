@@ -1,6 +1,6 @@
 import { useRef } from 'preact/hooks'
 import { COLORS, FABRICS, FORMALITIES, type Item, OCCASIONS, PATTERNS, TYPES, WEIGHTS } from '../model'
-import { type Draft, addLabel, edit, geminiReady, remove, runTag } from '../drafts'
+import { type Draft, addLabel, edit, geminiReady, remove, removeLabel, runTag } from '../drafts'
 import { lookalike } from '../ops'
 import { Chips, Picture } from '../ui'
 
@@ -8,7 +8,7 @@ interface Props { drafts: Draft[]; existing: Item[]; onAddMore: () => void; onSa
 
 export function Review({ drafts, existing, onAddMore, onSaveAll, onBack, onSetup }: Props) {
   const untyped = drafts.filter((d) => d.photo && !d.type && d.tagging !== 'busy').length
-  const processing = drafts.some((d) => (!d.photo && !d.failed) || d.tagging === 'busy')
+  const processing = drafts.some((d) => (!d.photo && !d.failed) || d.tagging === 'busy' || d.labelsPending > 0)
   const ready = drafts.some((d) => d.photo && d.type)
   const gemini = geminiReady()
   return (
@@ -39,7 +39,7 @@ function DraftCard({ d, existing, gemini }: { d: Draft; existing: Item[]; gemini
   const toggle = <T extends string>(cur: T | undefined, c: T) => (cur === c ? undefined : c)
   const flip = <T extends string>(list: T[], c: T) => (list.includes(c) ? list.filter((x) => x !== c) : [...list, c])
   const status = d.tagging === 'busy' ? 'Tagging…' : d.tagging === 'error' ? `Couldn't tag (${d.tagError}). Fill in by hand or retry.` :
-    d.tagging === 'done' ? (d.label ? 'Tagged · fibers read from label' : 'Tagged · fibers estimated') : ''
+    d.tagging === 'done' ? (d.labels.length ? 'Tagged · read from label' : 'Tagged · fibers estimated. Add a label for exact fibers and size.') : ''
   return (
     <div class="card card-pad stack" style={{ gap: 10, padding: 12 }}>
       <div class="row" style={{ alignItems: 'flex-start' }}>
@@ -55,19 +55,27 @@ function DraftCard({ d, existing, gemini }: { d: Draft; existing: Item[]; gemini
               {d.tagging === 'error' && <button class="link" onClick={() => runTag(d.key)}>Retry</button>}
             </div>
           )}
-          <div class="row" style={{ gap: 16 }}>
-            {gemini && d.photo && <button class="link" onClick={() => labelRef.current?.click()}>{d.label ? 'Retake label' : '+ Care label'}</button>}
-            <button class="link" style={{ color: 'var(--danger)' }} onClick={() => remove(d.key)}>Remove</button>
-          </div>
+          <button class="link" style={{ color: 'var(--danger)', alignSelf: 'flex-start' }} onClick={() => remove(d.key)}>Remove</button>
         </div>
+      </div>
+      <div class="labels-row">
+        <span class="label" style={{ marginRight: 4 }}>Labels</span>
+        {d.labels.map((l, n) => (
+          <div key={l.url} class="label-thumb">
+            <img src={l.url} alt={`Label ${n + 1}`} />
+            <button class="rm" aria-label="Remove label" onClick={() => removeLabel(d.key, n)}>✕</button>
+          </div>
+        ))}
+        {Array.from({ length: d.labelsPending }, (_, n) => <div key={`p${n}`} class="label-thumb" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div class="spinner" style={{ width: 16, height: 16 }} /></div>)}
+        <button class="label-add press" aria-label="Add label photo" onClick={() => labelRef.current?.click()}>+</button>
       </div>
       <input ref={labelRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => {
         const f = (e.target as HTMLInputElement).files?.[0]
         ;(e.target as HTMLInputElement).value = ''
-        if (f) addLabel(d.key, f)
+        if (f) addLabel(f, d.key)
       }} />
-      {(d.brand || d.blend || d.exactColor) && (
-        <div class="muted">{[d.brand, d.exactColor, d.blend].filter(Boolean).join(' · ')}</div>
+      {(d.brand || d.size || d.blend || d.exactColor || d.care) && (
+        <div class="muted">{[d.brand, d.size && `Size ${d.size}`, d.exactColor, d.blend, d.care].filter(Boolean).join(' · ')}</div>
       )}
       <div class="label">Type</div>
       <Chips options={TYPES} selected={d.type ? [d.type] : []} onToggle={(c) => edit(d.key, { type: c })} />
