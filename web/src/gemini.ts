@@ -300,7 +300,7 @@ export async function pickModel(key: string): Promise<string> {
 const list = (opts: readonly { code: string; label: string }[]) => opts.map((o) => `${o.code} (${o.label})`).join(', ')
 const enumOf = (opts: readonly { code: string }[]) => ({ type: 'STRING', enum: opts.map((o) => o.code) })
 
-const promptFor = (p: Profile) => `You catalog one garment for Sacha's wardrobe app. Look at the garment photo (and any label photos: care label, size tag, brand tag) and fill EVERY field below with your best judgment. A stylist would always pick a color family, formality, weight, pattern, season, fit, contexts and likely fabrics from the photo; do the same. Only brand, size, care and blend may be left out, when no label or logo shows them. For coded fields, answer with the exact UPPERCASE code shown (e.g. TOBACCO, SMART), never the words in brackets.
+const promptFor = (p: Profile) => `You catalog one garment for Sacha's wardrobe app. Look at the garment photo (and any label photos: care label, size tag, brand tag) and fill EVERY field below with your best judgment. A stylist would always pick a color family, formality, weight, pattern, fit, contexts and likely fabrics from the photo; do the same. Only brand, size, care and blend may be left out, when no label or logo shows them. For coded fields, answer with the exact UPPERCASE code shown (e.g. TOBACCO, SMART), never the words in brackets.
 
 name: 2–4 words, color + garment, e.g. "Olive knit polo", "Stone chinos", "Tobacco suede loafers".
 type: one of ${list(TYPES)}. Overshirts, blazers, jackets, sweaters, hoodies = LAYER.
@@ -315,7 +315,6 @@ care: short wash instructions from a care label, e.g. "Machine wash cold, tumble
 fit: ${list(FITS)}.
 formality: ${list(FORMALITIES)}.
 weight: LIGHT for warm days (polos, tees, shorts, thin shirts), MID for mild days (overshirts, heavier chinos, denim), HEAVY for cold (sweaters, jackets).
-season: ${list(SEASONS)}.
 contexts: where it fits, from ${list(OCCASIONS)}. EXEC = customer meetings and conferences, WFH = working from home on video, FAMILY = kids and weekends, DATE = dinners out, BEACH, ACTIVE = workout only.
 hero: true if people would notice it repeating: rust, burgundy or forest color, any pattern beyond solid or subtle texture, a visible logo, or a standout piece.
 paletteFail: Sacha is a ${p.colorSeason}. In palette: ${p.coreColors.join(', ')}; accents ${p.accentColors.join(', ')}. Avoid near the face: ${p.avoidColors.join(', ')}${p.blackRule ? ', and black' : ''}. Tops and layers outside the palette fail. Bottoms and shoes only fail for brights or loud patterns.
@@ -329,10 +328,10 @@ const SCHEMA = {
     name: { type: 'STRING' }, type: enumOf(TYPES), colorFamily: enumOf(COLORS), exactColor: { type: 'STRING' },
     pattern: enumOf(PATTERNS), fabrics: { type: 'ARRAY', items: enumOf(FABRICS) }, blend: { type: 'STRING' },
     fabricEstimated: { type: 'BOOLEAN' }, brand: { type: 'STRING' }, size: { type: 'STRING' }, care: { type: 'STRING' }, fit: enumOf(FITS), formality: enumOf(FORMALITIES),
-    weight: enumOf(WEIGHTS), season: enumOf(SEASONS), contexts: { type: 'ARRAY', items: enumOf(OCCASIONS) },
+    weight: enumOf(WEIGHTS), contexts: { type: 'ARRAY', items: enumOf(OCCASIONS) },
     hero: { type: 'BOOLEAN' }, paletteFail: { type: 'BOOLEAN' }, failReason: { type: 'STRING' },
   },
-  required: ['name', 'type', 'colorFamily', 'exactColor', 'pattern', 'fabrics', 'fit', 'formality', 'weight', 'season', 'contexts', 'hero', 'paletteFail'],
+  required: ['name', 'type', 'colorFamily', 'exactColor', 'pattern', 'fabrics', 'fit', 'formality', 'weight', 'contexts', 'hero', 'paletteFail'],
 }
 
 const toBase64 = (b: Blob) => new Promise<string>((res, rej) => {

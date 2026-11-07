@@ -1,40 +1,10 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import {
-  COLORS, CONDITIONS, FABRICS, FITS, FORMALITIES, type Item, OCCASIONS, type Opt, PATTERNS, SEASONS, STATUSES, TYPES, WEIGHTS,
-} from '../model'
-import { Chips, Picture, Sheet } from '../ui'
+import type { Item } from '../model'
+import { Picture, Sheet } from '../ui'
+import { TagEditor } from './tagEditor'
 
-interface Tag { label: string; options: readonly Opt[]; multi: boolean; get: (i: Item) => string[]; set: (i: Item, v: string[]) => Item }
-
-const single = <K extends keyof Item>(label: string, options: readonly Opt[], key: K, required = false): Tag => ({
-  label, options, multi: false,
-  get: (i) => (i[key] ? [String(i[key])] : []),
-  set: (i, v) => (required && !v[0] ? i : ({ ...i, [key]: v[0] as Item[K] })),
-})
-const yesNo: readonly Opt[] = [{ code: 'Y', label: 'Yes' }, { code: 'N', label: 'No' }]
-const passFail: readonly Opt[] = [{ code: 'PASS', label: 'Pass' }, { code: 'FAIL', label: 'Fail' }]
-
-const TAGS: Tag[] = [
-  single('Type', TYPES, 'type', true),
-  { label: 'Context', options: OCCASIONS, multi: true, get: (i) => i.contexts, set: (i, v) => ({ ...i, contexts: v as Item['contexts'] }) },
-  single('Weight', WEIGHTS, 'weight'),
-  single('Formality', FORMALITIES, 'formality'),
-  single('Color family', COLORS, 'colorFamily'),
-  single('Pattern', PATTERNS, 'pattern'),
-  { label: 'Fabric', options: FABRICS, multi: true, get: (i) => i.fabrics, set: (i, v) => ({ ...i, fabrics: v as Item['fabrics'] }) },
-  single('Season', SEASONS, 'season'),
-  single('Fit', FITS, 'fit'),
-  { label: 'Hero', options: yesNo, multi: false, get: (i) => [i.hero ? 'Y' : 'N'], set: (i, v) => ({ ...i, hero: v[0] === 'Y' }) },
-  { label: 'Palette fit', options: passFail, multi: false, get: (i) => [i.paletteFail ? 'FAIL' : 'PASS'], set: (i, v) => ({ ...i, paletteFail: v[0] === 'FAIL' }) },
-  single('Condition', CONDITIONS, 'condition', true),
-  single('Status', STATUSES, 'status', true),
-]
-
-interface Text { label: string; key: 'name' | 'brand' | 'size' | 'exactColor' | 'blend' | 'care' | 'notes' }
-const DETAILS: Text[] = [
-  { label: 'Brand', key: 'brand' }, { label: 'Size', key: 'size' }, { label: 'Exact color', key: 'exactColor' }, { label: 'Blend', key: 'blend' },
-  { label: 'Care', key: 'care' }, { label: 'Notes', key: 'notes' },
-]
+interface Text { label: string; key: 'name' | 'brand' | 'size' | 'care' | 'notes' }
+const DETAILS: Text[] = [{ label: 'Brand', key: 'brand' }, { label: 'Size', key: 'size' }, { label: 'Care', key: 'care' }, { label: 'Notes', key: 'notes' }]
 
 interface Props {
   item: Item
@@ -51,7 +21,6 @@ interface Props {
 }
 
 export function ItemDetail({ item, canTag, onRetag, onAddLabel, labelUrl, onFindReplacement, onBack, onChange, onDonate, onTakePhoto, onPickedPhoto }: Props) {
-  const [tag, setTag] = useState<Tag | null>(null)
   const [text, setText] = useState<Text | null>(null)
   const [menu, setMenu] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -86,22 +55,19 @@ export function ItemDetail({ item, canTag, onRetag, onAddLabel, labelUrl, onFind
       {item.fitNote && <div class="note">Fit check: {item.fitNote}. Alter or replace.</div>}
       <button style={{ textAlign: 'left' }} onClick={() => setText({ label: 'Name', key: 'name' })}><h1 class="headline">{item.name}</h1></button>
 
-      <div class="card">
-        {TAGS.map((t) => {
-          const v = t.get(item)
-          const label = v.length ? t.options.filter((o) => v.includes(o.code)).map((o) => o.label).join(' · ') : 'Not set'
-          return <button key={t.label} class="kv" onClick={() => setTag(t)}><span class="k">{t.label}</span><span class="v">{label} ›</span></button>
-        })}
+      {item.status === 'DONATED' && <div class="note">Donated{item.donatedOn ? ` on ${item.donatedOn}` : ''}. Tap Restore to bring it back.</div>}
+      <div class="card card-pad">
+        <TagEditor v={item} set={(c) => onChange({ ...item, ...c, ...(c.type === undefined && 'type' in c ? { type: item.type } : {}) } as Item)} showCondition />
       </div>
-      <div class="labels-row">
+      <div class="card">
+      <div class="labels-row" style={{ padding: '12px 16px 8px' }}>
         <span class="label" style={{ marginRight: 4 }}>Labels</span>
         {labelUrls.map((u, n) => (
           <button key={u} class="label-thumb press" onClick={() => setViewing(u)} aria-label={`View label ${n + 1}`}><img src={u} alt="" /></button>
         ))}
         <button class="label-add press" disabled={busy} aria-label="Add label photo" onClick={() => labelRef.current?.click()}>+</button>
-        {!labelUrls.length && <span class="muted">Add the care or size tag</span>}
+        {!labelUrls.length && <span class="muted">Snap the size or care tag</span>}
       </div>
-      <div class="card">
         {DETAILS.map((f) => (
           <button key={f.key} class="kv" onClick={() => setText(f)}><span class="k">{f.label}</span><span class="v">{item[f.key] || 'Add'}</span></button>
         ))}
@@ -124,8 +90,7 @@ export function ItemDetail({ item, canTag, onRetag, onAddLabel, labelUrl, onFind
       </div>
       {item.hasPhoto && (
         <div class="row" style={{ gap: 8 }}>
-          <button class="btn btn-secondary btn-sm press grow" disabled={busy} onClick={() => run()}>{canTag ? 'Auto-tag' : 'Set up auto-tag'}</button>
-          <button class="btn btn-secondary btn-sm press grow" disabled={busy} onClick={() => labelRef.current?.click()}>Add label photo</button>
+          <button class="btn btn-secondary btn-sm press grow" disabled={busy} onClick={() => run()}>{canTag ? 'Auto-tag again' : 'Set up auto-tag'}</button>
         </div>
       )}
       {tagMsg && (
@@ -147,21 +112,8 @@ export function ItemDetail({ item, canTag, onRetag, onAddLabel, labelUrl, onFind
       }} />
 
       {viewing && <div class="viewer" onClick={() => setViewing(null)}><img src={viewing} alt="Label" /></div>}
-      {tag && <TagSheet tag={tag} item={item} onSave={(i) => { onChange(i); setTag(null) }} onClose={() => setTag(null)} />}
       {text && <TextSheet field={text} item={item} onSave={(i) => { onChange(i); setText(null) }} onClose={() => setText(null)} />}
     </div>
-  )
-}
-
-function TagSheet({ tag, item, onSave, onClose }: { tag: Tag; item: Item; onSave: (i: Item) => void; onClose: () => void }) {
-  const [sel, setSel] = useState(tag.get(item))
-  return (
-    <Sheet title={tag.label} onClose={onClose} foot={tag.multi ? <button class="btn btn-primary press grow" onClick={() => onSave(tag.set(item, sel))}>Done</button> : undefined}>
-      <Chips options={tag.options} selected={sel} onToggle={(c) => {
-        if (tag.multi) setSel(sel.includes(c) ? sel.filter((x) => x !== c) : [...sel, c])
-        else onSave(tag.set(item, [c]))
-      }} />
-    </Sheet>
   )
 }
 

@@ -1,4 +1,4 @@
-import { COLORS, CONDITIONS, FABRICS, FITS, FORMALITIES, type Item, OCCASIONS, type Opt, PATTERNS, SEASONS, STATUSES, TYPES, WEIGHTS, COLOR_BY } from './model'
+import { COLORS, CONDITIONS, FABRICS, FITS, FORMALITIES, type Item, OCCASIONS, type Opt, PATTERNS, STATUSES, TYPES, WEIGHTS, COLOR_BY } from './model'
 import { daysBetween } from './dates'
 
 /** Within a group, picks mean "any of these", except Fabric: "contains every fabric picked". */
@@ -19,7 +19,6 @@ export const FILTER_GROUPS: FilterGroup[] = [
   { key: 'color', label: 'Color family', options: COLORS, value: (i) => one(i.colorFamily) },
   { key: 'pattern', label: 'Pattern', options: PATTERNS, value: (i) => one(i.pattern) },
   { key: 'fabric', label: 'Fabric (contains all)', options: FABRICS, matchAll: true, value: (i) => i.fabrics },
-  { key: 'season', label: 'Season', options: SEASONS, value: (i) => one(i.season) },
   { key: 'fit', label: 'Fit', options: FITS, value: (i) => one(i.fit) },
   { key: 'hero', label: 'Hero', options: [{ code: 'Y', label: 'Yes' }, { code: 'N', label: 'No' }], value: (i) => [i.hero ? 'Y' : 'N'] },
   { key: 'palette', label: 'Palette fit', options: [{ code: 'PASS', label: 'Pass' }, { code: 'FAIL', label: 'Fail' }], value: (i) => [i.paletteFail ? 'FAIL' : 'PASS'] },

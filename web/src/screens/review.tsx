@@ -1,8 +1,9 @@
-import { useRef, useState } from 'preact/hooks'
-import { COLORS, FABRICS, FITS, FORMALITIES, type Item, OCCASIONS, PATTERNS, TYPES, WEIGHTS, labelOf } from '../model'
+import { useRef } from 'preact/hooks'
+import type { Item } from '../model'
 import { type Draft, addLabel, canSave, edit, geminiReady, remove, removeLabel, runTag, skipTag, useDrafts } from '../drafts'
 import { lookalike } from '../ops'
-import { Chips, Picture } from '../ui'
+import { Picture } from '../ui'
+import { TagEditor } from './tagEditor'
 
 interface Props { existing: Item[]; onAddMore: () => void; onSave: (keys: string[]) => void; onBack: () => void; onSetup: () => void }
 
@@ -21,10 +22,10 @@ export function Review({ existing, onAddMore, onSave, onBack, onSetup }: Props) 
           <button class="press" style={{ fontSize: 15, fontWeight: 500, height: 44 }} onClick={onAddMore}>+ More</button>
         </div>
         <div class="muted">
-          {gemini ? 'Safe on your phone. Tagging keeps going if you leave. Check the chips, then tap Looks right.' : <>Pick a type for each item. <button class="link" onClick={onSetup}>Connect Gemini</button> to fill these in for you.</>}
+          {gemini ? 'Safe on your phone. Tagging keeps going if you leave. Fix any chip, then tap Looks right.' : <>Pick a type for each item. <button class="link" onClick={onSetup}>Connect Gemini</button> to fill these in for you.</>}
         </div>
         {!drafts.length && <div class="card card-pad">All caught up.</div>}
-        {drafts.map((d) => <DraftCard key={d.key} d={d} existing={existing} gemini={gemini} onSave={() => onSave([d.key])} />)}
+        {drafts.map((d) => <DraftCard key={d.key} d={d} existing={existing} onSave={() => onSave([d.key])} />)}
       </div>
       <div style={{ padding: '12px 16px calc(env(safe-area-inset-bottom) + 12px)', background: 'var(--bg)', borderTop: '1px solid var(--border)' }}>
         <button class="btn btn-primary press" style={{ width: '100%' }} disabled={!ready.length} onClick={() => onSave(ready.map((d) => d.key))}>
@@ -36,21 +37,9 @@ export function Review({ existing, onAddMore, onSave, onBack, onSetup }: Props) 
   )
 }
 
-function DraftCard({ d, existing, gemini, onSave }: { d: Draft; existing: Item[]; gemini: boolean; onSave: () => void }) {
+function DraftCard({ d, existing, onSave }: { d: Draft; existing: Item[]; onSave: () => void }) {
   const labelRef = useRef<HTMLInputElement>(null)
-  const [open, setOpen] = useState(false)
-  // Tagged items show as a one-glance summary; tap Edit to change any chip.
-  const expanded = open || !gemini || d.tagging === 'error' || (d.tagging === 'done' && !d.type)
-  const summary = [
-    labelOf(TYPES, d.type), [labelOf(COLORS, d.colorFamily), d.exactColor && `(${d.exactColor})`].filter(Boolean).join(' '),
-    labelOf(WEIGHTS, d.weight), labelOf(FORMALITIES, d.formality), labelOf(PATTERNS, d.pattern), labelOf(FITS, d.fit),
-    d.contexts.map((c) => labelOf(OCCASIONS, c)).join(', '),
-    d.fabrics.map((c) => labelOf(FABRICS, c)).join(' + ') + (d.fabrics.length && d.fabricEstimated ? ' (est.)' : ''),
-    d.hero && 'Hero',
-  ].filter(Boolean).join(' · ')
   const twin = lookalike(existing, d.type, d.colorFamily, d.pattern)
-  const toggle = <T extends string>(cur: T | undefined, c: T) => (cur === c ? undefined : c)
-  const flip = <T extends string>(list: T[], c: T) => (list.includes(c) ? list.filter((x) => x !== c) : [...list, c])
   const status = d.tagging === 'busy' ? (d.tagStatus ?? 'Tagging…') : d.tagging === 'error' ? (d.tagError === 'Skipped' ? 'Fill in by hand.' : `Couldn't tag: ${d.tagError}. Fill in by hand or retry.`) :
     d.tagging === 'done' ? (d.labels.length ? 'Tagged · read from label' : 'Tagged · fibers estimated. Add a label for exact fibers and size.') : ''
   return (
@@ -89,45 +78,14 @@ function DraftCard({ d, existing, gemini, onSave }: { d: Draft; existing: Item[]
         ;(e.target as HTMLInputElement).value = ''
         if (f) addLabel(f, d.key)
       }} />
-      {(d.brand || d.size || d.blend || d.exactColor || d.care) && (
-        <div class="muted">{[d.brand, d.size && `Size ${d.size}`, d.exactColor, d.blend, d.care].filter(Boolean).join(' · ')}</div>
+      {(d.brand || d.size || d.care) && (
+        <div class="muted">{[d.brand, d.size && `Size ${d.size}`, d.care].filter(Boolean).join(' · ')}</div>
       )}
-      {!expanded && d.tagging === 'done' && <div style={{ fontSize: 15, lineHeight: 1.45 }}>{summary}</div>}
-      {!expanded && d.paletteFail && <div class="muted">Off palette{d.failReason ? `: ${d.failReason}` : ''}</div>}
-      {expanded && <>
-      <div class="label">Type</div>
-      <Chips options={TYPES} selected={d.type ? [d.type] : []} onToggle={(c) => edit(d.key, { type: c })} />
-      <div class="label">Color family</div>
-      <Chips options={COLORS} selected={d.colorFamily ? [d.colorFamily] : []} onToggle={(c) => edit(d.key, { colorFamily: toggle(d.colorFamily, c) })} />
-      <div class="label">Weight</div>
-      <Chips options={WEIGHTS} selected={d.weight ? [d.weight] : []} onToggle={(c) => edit(d.key, { weight: toggle(d.weight, c) })} />
-      <div class="label">Formality</div>
-      <Chips options={FORMALITIES} selected={d.formality ? [d.formality] : []} onToggle={(c) => edit(d.key, { formality: toggle(d.formality, c) })} />
-      <div class="label">Context</div>
-      <Chips options={OCCASIONS} selected={d.contexts} onToggle={(c) => edit(d.key, { contexts: flip(d.contexts, c) })} />
-      <div class="label">Pattern</div>
-      <Chips options={PATTERNS} selected={d.pattern ? [d.pattern] : []} onToggle={(c) => edit(d.key, { pattern: toggle(d.pattern, c) })} />
-      <div class="label">Fabric{d.fabricEstimated ? ' (estimated)' : ''}</div>
-      <Chips options={FABRICS} selected={d.fabrics} onToggle={(c) => edit(d.key, { fabrics: flip(d.fabrics, c), fabricEstimated: false })} />
-      <div class="row" style={{ gap: 20, alignItems: 'flex-start' }}>
-        <div class="stack" style={{ gap: 6 }}>
-          <div class="label">Hero</div>
-          <Chips options={[{ code: 'Y', label: 'Yes' }, { code: 'N', label: 'No' }]} selected={[d.hero ? 'Y' : 'N']} onToggle={(c) => edit(d.key, { hero: c === 'Y' })} />
-        </div>
-        <div class="stack" style={{ gap: 6 }}>
-          <div class="label">Palette</div>
-          <Chips options={[{ code: 'PASS', label: 'Pass' }, { code: 'FAIL', label: 'Fail' }]} selected={[d.paletteFail ? 'FAIL' : 'PASS']} onToggle={(c) => edit(d.key, { paletteFail: c === 'FAIL' })} />
-        </div>
-      </div>
-      {d.paletteFail && d.failReason && <div class="muted">Off palette: {d.failReason}</div>}
-      </>}
+      <TagEditor v={d} set={(c) => edit(d.key, c)} />
       {twin && <div class="note">Looks like {twin.id} ({twin.name}). Save anyway?</div>}
-      <div class="row" style={{ gap: 8 }}>
-        {!expanded && <button class="btn btn-secondary press" style={{ flex: '0 0 30%' }} onClick={() => setOpen(true)}>Edit</button>}
-        <button class="btn btn-secondary press grow" disabled={!canSave(d)} onClick={onSave}>
-          {d.tagging === 'busy' ? 'Tagging…' : !d.type ? 'Pick a type first' : 'Looks right · Save'}
-        </button>
-      </div>
+      <button class="btn btn-secondary press" disabled={!canSave(d)} onClick={onSave}>
+        {d.tagging === 'busy' ? 'Tagging…' : !d.type ? 'Pick a type first' : 'Looks right · Save'}
+      </button>
     </div>
   )
 }
