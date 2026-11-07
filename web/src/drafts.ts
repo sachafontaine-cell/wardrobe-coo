@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'preact/hooks'
 import type { ColorFamily, Fabric, Fit, Formality, ItemType, Occasion, Pattern, Season, Weight } from './model'
 import { type Processed, processLabel, processPhoto } from './photo'
-import { type Tagging, tagQueued } from './gemini'
+import { GeminiError, type Tagging, tagQueued } from './gemini'
 import { getSettings } from './settings'
 import { getData } from './store'
 import { profileOf } from './model'
@@ -20,6 +20,10 @@ export interface Draft {
   failed?: boolean
   tagging?: 'busy' | 'done' | 'error'
   tagError?: string
+  /** Live progress line while tagging, e.g. "Retrying in 5 s…". */
+  tagStatus?: string
+  /** The last failure was a dropped connection or timeout: retry when the app is back. */
+  retryable?: boolean
   /** Tag once the camera closes, so item + label shots go to Gemini together. */
   deferTag?: boolean
   /** A label arrived while tagging; tag again when done. */
@@ -107,6 +111,7 @@ export function removeLabel(key: string, n: number) {
   patch(key, { labels: d.labels.filter((_, i) => i !== n) })
 }
 
+
 /** Camera closed: tag everything that was waiting. */
 export function releaseDeferred() {
   for (const d of drafts) if (d.deferTag) { patch(d.key, { deferTag: false }); maybeTag(d.key) }
@@ -118,15 +123,56 @@ function maybeTag(key: string) {
   runTag(key)
 }
 
+const aborts = new Map<string, AbortController>()
+
+// Keep the screen on while Gemini works: a sleeping phone drops the connection.
+let wake: { release: () => Promise<void> } | null = null
+async function syncWakeLock() {
+  const busy = drafts.some((d) => d.tagging === 'busy')
+  try {
+    if (busy && !wake && document.visibilityState === 'visible') wake = await (navigator as any).wakeLock?.request('screen') ?? null
+    else if (!busy && wake) { await wake.release(); wake = null }
+  } catch { wake = null }
+}
+
 export function runTag(key: string) {
   const d = find(key)
   const s = getSettings()
   if (!d?.photo || !s.geminiKey || !s.geminiModel) return
-  patch(key, { tagging: 'busy', tagError: undefined, retag: false })
-  tagQueued(s.geminiKey, s.geminiModel, d.photo.full, d.labels.map((l) => l.blob), profileOf(getData()))
+  aborts.get(key)?.abort()
+  const ctrl = new AbortController()
+  aborts.set(key, ctrl)
+  patch(key, { tagging: 'busy', tagError: undefined, tagStatus: 'Tagging…', retryable: false, retag: false })
+  syncWakeLock()
+  tagQueued(s.geminiKey, s.geminiModel, d.photo.full, d.labels.map((l) => l.blob), profileOf(getData()), {
+    signal: ctrl.signal,
+    onStatus: (t) => { if (find(key)?.tagging === 'busy') patch(key, { tagStatus: t }) },
+  })
     .then((t) => applyTagging(key, t, d.labels.length > 0))
-    .catch((e) => patch(key, { tagging: 'error', tagError: (e as Error).message }))
-    .finally(() => { if (find(key)?.retag) runTag(key) })
+    .catch((e) => {
+      const err = e as GeminiError
+      patch(key, { tagging: 'error', tagError: err.message, retryable: !!err.retryable })
+    })
+    .finally(() => {
+      if (aborts.get(key) === ctrl) aborts.delete(key)
+      syncWakeLock()
+      if (find(key)?.retag) runTag(key)
+    })
+}
+
+/** Stop waiting on Gemini for this item; fill it in by hand. */
+export function skipTag(key: string) {
+  aborts.get(key)?.abort()
+  patch(key, { tagging: 'error', tagError: 'Skipped', retryable: false, retag: false })
+}
+
+// Back in the app after the phone slept: retry anything that lost its connection.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    for (const d of drafts) if (d.tagging === 'error' && d.retryable) runTag(d.key)
+    syncWakeLock()
+  })
 }
 
 function applyTagging(key: string, t: Tagging, fromLabel: boolean) {
@@ -168,6 +214,8 @@ export function remove(key: string) {
 }
 
 export function clearDrafts() {
+  aborts.forEach((a) => a.abort())
+  aborts.clear()
   drafts.forEach(revoke)
   drafts = []
   emit()

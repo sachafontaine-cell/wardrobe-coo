@@ -1,8 +1,7 @@
 // Fit check: compare weight, waist and photos with last time; pick items worth trying on.
 import { type AppData, type Item, profileOf } from './model'
-import { GeminiError } from './gemini'
+import { generate } from './gemini'
 
-const API = 'https://generativelanguage.googleapis.com/v1beta'
 const TOPS = ['POLO', 'TEE', 'SHIRT', 'LAYER']
 const BOTTOMS = ['PANT', 'SHORT', 'SUIT']
 
@@ -45,9 +44,7 @@ export async function comparePhotos(key: string, model: string, before: Blob, af
     generationConfig: { responseMimeType: 'application/json', temperature: 0.1, responseSchema: { type: 'OBJECT', properties: {
       change: { type: 'STRING', enum: ['none', 'slimmer', 'heavier'] }, areas: { type: 'ARRAY', items: { type: 'STRING' } }, note: { type: 'STRING' } }, required: ['change'] } },
   }
-  const r = await fetch(`${API}/models/${model}:generateContent?key=${encodeURIComponent(key)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  if (!r.ok) throw new GeminiError(`Gemini error ${r.status}`, r.status)
-  const j = await r.json()
+  const j = await generate(key, model, body)
   const t = JSON.parse(j?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}')
   return { change: ['slimmer', 'heavier'].includes(t.change) ? t.change : 'none', areas: Array.isArray(t.areas) ? t.areas : [], note: typeof t.note === 'string' ? t.note : '' }
 }

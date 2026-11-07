@@ -27,7 +27,64 @@ export interface Tagging {
 }
 
 export class GeminiError extends Error {
-  constructor(message: string, readonly status = 0) { super(message) }
+  /** retryable: a dropped connection, timeout or busy server — worth trying again. */
+  constructor(message: string, readonly status = 0, readonly retryable = false) { super(message) }
+}
+
+/** Bumped when model choice changes, so saved keys get re-checked. */
+export const MODEL_LOGIC = 2
+
+/** Fast answers: thinking kept low (it adds latency and isn't needed to read a photo). */
+function thinkingFor(model: string): object | undefined {
+  if (/^gemini-2\.5/.test(model)) return { thinkingBudget: 0 }
+  if (/^gemini-[3-9]|flash-latest/.test(model)) return { thinkingLevel: 'low' }
+  return undefined
+}
+
+/**
+ * One generateContent call with a time limit and readable errors.
+ * Drops the thinking setting and tries again if the model rejects it.
+ */
+export async function generate(key: string, model: string, body: Record<string, unknown>, opts: { timeoutMs?: number; signal?: AbortSignal; thinking?: boolean } = {}): Promise<any> {
+  const gen = { ...(body.generationConfig as object | undefined) } as Record<string, unknown>
+  const thinking = opts.thinking !== false ? thinkingFor(model) : undefined
+  if (thinking) gen.thinkingConfig = thinking
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort('timeout'), opts.timeoutMs ?? 75000)
+  const onAbort = () => ctrl.abort('cancel')
+  opts.signal?.addEventListener('abort', onAbort)
+  let r: Response
+  try {
+    r = await fetch(`${API}/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, generationConfig: gen }), signal: ctrl.signal,
+    })
+  } catch {
+    if (ctrl.signal.reason === 'cancel') throw new GeminiError('Skipped', 0, false)
+    if (ctrl.signal.reason === 'timeout') throw new GeminiError('Gemini took too long to answer', 0, true)
+    throw new GeminiError('Lost the connection to Gemini', 0, true)
+  } finally {
+    clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', onAbort)
+  }
+  if (!r.ok) {
+    let msg = ''
+    try { msg = String((await r.json())?.error?.message ?? '') } catch { /* not JSON */ }
+    if (r.status === 400 && thinking && /think/i.test(msg)) return generate(key, model, body, { ...opts, thinking: false })
+    const short = msg.split(/(?<=\.)\s/)[0].slice(0, 140)
+    if (r.status === 429) throw new GeminiError(`Free limit reached for now${short ? `: ${short}` : ''}`, 429, true)
+    if (r.status === 400 || r.status === 403) throw new GeminiError(short || `Gemini refused the request (${r.status})`, r.status)
+    if (r.status === 404) throw new GeminiError(`Model ${model} isn't available for this key`, 404)
+    throw new GeminiError(`Gemini error ${r.status}${short ? `: ${short}` : ''}`, r.status, r.status >= 500)
+  }
+  return r.json()
+}
+
+/** Quick round trip to confirm the key and model work. Returns seconds taken. */
+export async function testGemini(key: string, model: string): Promise<number> {
+  const t0 = performance.now()
+  const j = await generate(key, model, { contents: [{ role: 'user', parts: [{ text: 'Reply with the word OK.' }] }] }, { timeoutMs: 30000 })
+  if (!j?.candidates?.[0]) throw new GeminiError('Gemini answered with nothing')
+  return (performance.now() - t0) / 1000
 }
 
 /** Finds the best current "Flash" model this key can use. */
@@ -37,9 +94,11 @@ export async function pickModel(key: string): Promise<string> {
   if (!r.ok) throw new GeminiError(`Gemini error ${r.status}`, r.status)
   const j = (await r.json()) as { models?: { name: string; supportedGenerationMethods?: string[] }[] }
   const names = (j.models ?? []).filter((m) => m.supportedGenerationMethods?.includes('generateContent')).map((m) => m.name.replace(/^models\//, ''))
+  // Newest stable Flash (e.g. gemini-3.8-flash). The "latest" alias can jump to a slow preview.
+  const stable = names.filter((n) => /^gemini-[\d.]+-flash$/.test(n)).sort((a, b) => parseFloat(b.slice(7)) - parseFloat(a.slice(7)))
+  if (stable.length) return stable[0]
   if (names.includes('gemini-flash-latest')) return 'gemini-flash-latest'
-  const stable = names.filter((n) => /^gemini-[\d.]+-flash$/.test(n))
-  const pool = stable.length ? stable : names.filter((n) => /^gemini-[\d.]+-flash/.test(n) && !/lite|image|tts|live|audio|thinking|exp/.test(n))
+  const pool = names.filter((n) => /^gemini-[\d.]+-flash/.test(n) && !/lite|image|tts|live|audio|thinking|exp/.test(n))
   pool.sort((a, b) => parseFloat(b.slice(7)) - parseFloat(a.slice(7)))
   if (!pool.length) throw new GeminiError('No Gemini Flash model is available for this key.')
   return pool[0]
@@ -88,13 +147,10 @@ const toBase64 = (b: Blob) => new Promise<string>((res, rej) => {
   r.readAsDataURL(b)
 })
 
-export async function tagGarment(key: string, model: string, garment: Blob, labels: Blob[] = [], profile: Profile = defaultProfile()): Promise<Tagging> {
+export async function tagGarment(key: string, model: string, garment: Blob, labels: Blob[] = [], profile: Profile = defaultProfile(), signal?: AbortSignal): Promise<Tagging> {
   const parts: object[] = [{ text: promptFor(profile) }, { text: 'Garment photo:' }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(garment) } }]
   for (const [n, label] of labels.slice(0, 4).entries()) parts.push({ text: `Label photo ${n + 1}:` }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(label) } })
-  const body = JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, temperature: 0.2 } })
-  const r = await fetch(`${API}/models/${model}:generateContent?key=${encodeURIComponent(key)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
-  if (!r.ok) throw new GeminiError(r.status === 429 ? 'Gemini is busy' : `Gemini error ${r.status}`, r.status)
-  const j = await r.json()
+  const j = await generate(key, model, { contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, temperature: 0.2 } }, { signal })
   const text: string | undefined = j?.candidates?.[0]?.content?.parts?.find((p: { text?: string }) => p.text)?.text
   if (!text) throw new GeminiError('Gemini returned nothing for this photo.')
   return clean(JSON.parse(text) as Record<string, unknown>)
@@ -124,16 +180,26 @@ const waiting: (() => void)[] = []
 const slot = () => new Promise<void>((res) => { if (running < 2) { running++; res() } else waiting.push(() => { running++; res() }) })
 const release = () => { running--; waiting.shift()?.() }
 
-export async function tagQueued(key: string, model: string, garment: Blob, labels: Blob[] = [], profile?: Profile): Promise<Tagging> {
+export interface TagOpts { signal?: AbortSignal; onStatus?: (s: string) => void }
+
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((res, rej) => {
+  const t = setTimeout(res, ms)
+  signal?.addEventListener('abort', () => { clearTimeout(t); rej(new GeminiError('Skipped')) }, { once: true })
+})
+
+export async function tagQueued(key: string, model: string, garment: Blob, labels: Blob[] = [], profile?: Profile, opts: TagOpts = {}): Promise<Tagging> {
+  opts.onStatus?.(running >= 2 ? 'Waiting for Gemini…' : 'Tagging…')
   await slot()
   try {
     for (let attempt = 0; ; attempt++) {
+      opts.onStatus?.(attempt ? `Tagging… (try ${attempt + 1} of 3)` : 'Tagging…')
       try {
-        return await tagGarment(key, model, garment, labels, profile)
+        return await tagGarment(key, model, garment, labels, profile, opts.signal)
       } catch (e) {
-        const s = (e as GeminiError).status
-        if ((s === 429 || s === 500 || s === 503) && attempt < 4) { await new Promise((r) => setTimeout(r, 4000 * 2 ** attempt)); continue }
-        throw e
+        const err = e as GeminiError
+        if (!err.retryable || attempt >= 2 || opts.signal?.aborted) throw e
+        const wait = err.status === 429 ? 20 : 5
+        for (let s = wait; s > 0; s--) { opts.onStatus?.(`${err.message}. Retrying in ${s} s…`); await sleep(1000, opts.signal) }
       }
     }
   } finally {

@@ -5,6 +5,8 @@ export interface GoogleLink { url: string; secret: string; email?: string }
 export interface Settings {
   geminiKey?: string
   geminiModel?: string
+  /** Which model-choice logic picked geminiModel. */
+  modelLogic?: number
   google?: GoogleLink
   setupHidden?: boolean
 }

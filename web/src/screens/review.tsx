@@ -1,6 +1,6 @@
 import { useRef } from 'preact/hooks'
 import { COLORS, FABRICS, FORMALITIES, type Item, OCCASIONS, PATTERNS, TYPES, WEIGHTS } from '../model'
-import { type Draft, addLabel, edit, geminiReady, remove, removeLabel, runTag } from '../drafts'
+import { type Draft, addLabel, edit, geminiReady, remove, removeLabel, runTag, skipTag } from '../drafts'
 import { lookalike } from '../ops'
 import { Chips, Picture } from '../ui'
 
@@ -38,7 +38,7 @@ function DraftCard({ d, existing, gemini }: { d: Draft; existing: Item[]; gemini
   const twin = lookalike(existing, d.type, d.colorFamily, d.pattern)
   const toggle = <T extends string>(cur: T | undefined, c: T) => (cur === c ? undefined : c)
   const flip = <T extends string>(list: T[], c: T) => (list.includes(c) ? list.filter((x) => x !== c) : [...list, c])
-  const status = d.tagging === 'busy' ? 'Tagging…' : d.tagging === 'error' ? `Couldn't tag (${d.tagError}). Fill in by hand or retry.` :
+  const status = d.tagging === 'busy' ? (d.tagStatus ?? 'Tagging…') : d.tagging === 'error' ? (d.tagError === 'Skipped' ? 'Fill in by hand.' : `Couldn't tag: ${d.tagError}. Fill in by hand or retry.`) :
     d.tagging === 'done' ? (d.labels.length ? 'Tagged · read from label' : 'Tagged · fibers estimated. Add a label for exact fibers and size.') : ''
   return (
     <div class="card card-pad stack" style={{ gap: 10, padding: 12 }}>
@@ -53,6 +53,7 @@ function DraftCard({ d, existing, gemini }: { d: Draft; existing: Item[]; gemini
               {d.tagging === 'busy' && <div class="spinner" style={{ width: 14, height: 14 }} />}
               <span class="grow">{status}</span>
               {d.tagging === 'error' && <button class="link" onClick={() => runTag(d.key)}>Retry</button>}
+              {d.tagging === 'busy' && <button class="link" onClick={() => skipTag(d.key)}>Skip</button>}
             </div>
           )}
           <button class="link" style={{ color: 'var(--danger)', alignSelf: 'flex-start' }} onClick={() => remove(d.key)}>Remove</button>

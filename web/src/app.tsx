@@ -16,7 +16,7 @@ import { addDays, daysBetween, todayStr } from './dates'
 import { getContext, onContextChange, refreshContext, setDay, useContext } from './context'
 import { getSettings, setSettings, useSettings } from './settings'
 import { uploadBackup } from './google'
-import { type Tagging, tagQueued } from './gemini'
+import { MODEL_LOGIC, type Tagging, pickModel, tagQueued } from './gemini'
 import { Icons, Toast } from './ui'
 import { Today } from './screens/today'
 import { Closet } from './screens/closet'
@@ -146,6 +146,9 @@ export function App() {
     }
     document.addEventListener('visibilitychange', onVisible)
     preloadThumbs(getData().items.filter((i) => i.hasPhoto && i.status === 'ACTIVE').map((i) => i.id))
+    // Saved keys: switch to the current model choice (newest stable Flash).
+    const s = getSettings()
+    if (s.geminiKey && s.modelLogic !== MODEL_LOGIC) pickModel(s.geminiKey).then((m) => setSettings({ geminiModel: m, modelLogic: MODEL_LOGIC })).catch(() => {})
     refreshContext().then(autoBackup)
     return () => document.removeEventListener('visibilitychange', onVisible)
   }, [])

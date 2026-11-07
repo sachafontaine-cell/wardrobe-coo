@@ -1,19 +1,19 @@
-// On-phone photo processing: orientation, square crop, resize, compress, thumbnail.
+// On-phone photo processing: orientation, resize, compress, thumbnail. The whole frame
+// is kept (no square crop), so what you saw in the camera is what gets saved.
 // Re-encoding through a canvas drops all metadata, including GPS location.
-const FULL = 1024
-const THUMB = 256
-const MAX_BYTES = 300 * 1024
+const FULL = 1280
+const THUMB = 400
+const MAX_BYTES = 350 * 1024
 
 export interface Processed { full: Blob; thumb: Blob }
 
-async function encode(bmp: ImageBitmap, size: number, maxBytes: number): Promise<Blob> {
-  const side = Math.min(bmp.width, bmp.height)
-  const sx = (bmp.width - side) / 2
-  const sy = (bmp.height - side) / 2
-  const canvas = new OffscreenCanvas(size, size)
+async function encode(bmp: ImageBitmap, longSide: number, maxBytes: number): Promise<Blob> {
+  const scale = Math.min(1, longSide / Math.max(bmp.width, bmp.height))
+  const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale)
+  const canvas = new OffscreenCanvas(w, h)
   const ctx = canvas.getContext('2d')!
   ctx.imageSmoothingQuality = 'high'
-  ctx.drawImage(bmp, sx, sy, side, side, 0, 0, size, size)
+  ctx.drawImage(bmp, 0, 0, w, h)
   let q = 0.8
   for (;;) {
     const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: q })

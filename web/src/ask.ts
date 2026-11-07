@@ -1,10 +1,8 @@
 // Ask: a Gemini chat that knows the closet, the profile and today. Uses Google Search
 // for shopping and trips. Changes come back as a small actions block the app applies.
 import { type AppData, COLOR_BY, type Item, type ItemType, type Occasion, type Profile, profileOf, typeLabel } from './model'
-import { GeminiError } from './gemini'
+import { GeminiError, generate } from './gemini'
 import { gaps } from './review'
-
-const API = 'https://generativelanguage.googleapis.com/v1beta'
 
 export interface Turn { role: 'user' | 'model'; text: string }
 
@@ -95,21 +93,25 @@ export function parse(raw: string, validIds: Set<string>): { text: string; actio
 }
 
 export async function ask(key: string, model: string, system: string, turns: Turn[], validIds: Set<string>): Promise<Answer> {
-  const body = (search: boolean) => JSON.stringify({
+  const body = (search: boolean) => ({
     systemInstruction: { parts: [{ text: system }] },
     contents: turns.slice(-12).map((t) => ({ role: t.role, parts: [{ text: t.text }] })),
     ...(search ? { tools: [{ google_search: {} }] } : {}),
     generationConfig: { temperature: 0.5 },
   })
-  const call = (search: boolean) => fetch(`${API}/models/${model}:generateContent?key=${encodeURIComponent(key)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body(search) })
-  let r = await call(true)
-  if (r.status === 400) r = await call(false) // search not available for this key or model
-  for (let attempt = 0; (r.status === 429 || r.status === 503) && attempt < 3; attempt++) {
-    await new Promise((res) => setTimeout(res, 4000 * 2 ** attempt))
-    r = await call(true)
+  let search = true
+  let j: any
+  for (let attempt = 0; ; attempt++) {
+    try {
+      j = await generate(key, model, body(search), { timeoutMs: 90000 })
+      break
+    } catch (e) {
+      const err = e as GeminiError
+      if (err.status === 400 && search) { search = false; continue } // search not available for this key or model
+      if (!err.retryable || attempt >= 2) throw err
+      await new Promise((res) => setTimeout(res, err.status === 429 ? 20000 : 4000))
+    }
   }
-  if (!r.ok) throw new GeminiError(r.status === 429 ? 'Gemini is busy. Try again in a minute.' : `Gemini error ${r.status}`, r.status)
-  const j = await r.json()
   const cand = j?.candidates?.[0]
   const raw = (cand?.content?.parts ?? []).map((p: { text?: string }) => p.text ?? '').join('').trim()
   if (!raw) throw new GeminiError('No answer. Try rephrasing.')

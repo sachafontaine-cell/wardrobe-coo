@@ -3,9 +3,9 @@ import { type AppData, type Profile as ProfileData, profileOf } from '../model'
 import { SECTIONS, SectionSheet } from './profileSections'
 import { nextReviewDate } from '../review'
 import { prettyDate } from '../dates'
-import { pickModel } from '../gemini'
+import { MODEL_LOGIC, pickModel, testGemini } from '../gemini'
 import { APPS_SCRIPT, connectGoogle, disconnectGoogle } from '../google'
-import { setSettings, useSettings } from '../settings'
+import { getSettings, setSettings, useSettings } from '../settings'
 import { Crest } from '../ui'
 
 interface Props {
@@ -89,7 +89,7 @@ function GeminiCard({ connected, model }: { connected: boolean; model?: string }
     setBusy(true); setMsg('Checking…')
     try {
       const m = await pickModel(k)
-      setSettings({ geminiKey: k, geminiModel: m })
+      setSettings({ geminiKey: k, geminiModel: m, modelLogic: MODEL_LOGIC })
       setKey(''); setMsg('')
     } catch (e) {
       setMsg((e as Error).message || "Couldn't reach Gemini. Check your connection.")
@@ -105,7 +105,16 @@ function GeminiCard({ connected, model }: { connected: boolean; model?: string }
       {connected ? (
         <>
           <div class="muted">Using {model}. Your key is stored only on this phone.</div>
-          <button class="link" style={{ alignSelf: 'flex-start' }} onClick={() => setSettings({ geminiKey: undefined, geminiModel: undefined })}>Remove key</button>
+          <div class="row" style={{ gap: 16 }}>
+            <button class="link" disabled={busy} onClick={() => {
+              const s = getSettings()
+              if (!s.geminiKey || !s.geminiModel) return
+              setBusy(true); setMsg('Testing…')
+              testGemini(s.geminiKey, s.geminiModel).then((sec) => setMsg(`Working ✓ answered in ${sec.toFixed(1)} s`)).catch((e) => setMsg(`Not working: ${(e as Error).message}`)).finally(() => setBusy(false))
+            }}>Test</button>
+            <button class="link" onClick={() => { setSettings({ geminiKey: undefined, geminiModel: undefined, modelLogic: undefined }); setMsg('') }}>Remove key</button>
+          </div>
+          {msg && <div class="muted">{msg}</div>}
         </>
       ) : (
         <>
