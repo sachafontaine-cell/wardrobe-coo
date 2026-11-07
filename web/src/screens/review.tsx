@@ -53,6 +53,7 @@ function DraftCard({ d, existing, gemini }: { d: Draft; existing: Item[]; gemini
               {d.tagging === 'busy' && <div class="spinner" style={{ width: 14, height: 14 }} />}
               <span class="grow">{status}</span>
               {d.tagging === 'error' && <button class="link" onClick={() => runTag(d.key)}>Retry</button>}
+              {d.tagging === 'done' && <button class="link" onClick={() => runTag(d.key)}>Re-tag</button>}
               {d.tagging === 'busy' && <button class="link" onClick={() => skipTag(d.key)}>Skip</button>}
             </div>
           )}

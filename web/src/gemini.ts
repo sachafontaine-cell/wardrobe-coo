@@ -107,7 +107,7 @@ export async function pickModel(key: string): Promise<string> {
 const list = (opts: readonly { code: string; label: string }[]) => opts.map((o) => `${o.code} (${o.label})`).join(', ')
 const enumOf = (opts: readonly { code: string }[]) => ({ type: 'STRING', enum: opts.map((o) => o.code) })
 
-const promptFor = (p: Profile) => `You catalog one garment for Sacha's wardrobe app. Look at the garment photo (and any label photos: care label, size tag, brand tag) and fill the fields. Never guess wildly: leave a field out if you can't tell.
+const promptFor = (p: Profile) => `You catalog one garment for Sacha's wardrobe app. Look at the garment photo (and any label photos: care label, size tag, brand tag) and fill EVERY field below with your best judgment. A stylist would always pick a color family, formality, weight, pattern, season, fit, contexts and likely fabrics from the photo; do the same. Only brand, size, care and blend may be left out, when no label or logo shows them. For coded fields, answer with the exact UPPERCASE code shown (e.g. TOBACCO, SMART), never the words in brackets.
 
 name: 2–4 words, color + garment, e.g. "Olive knit polo", "Stone chinos", "Tobacco suede loafers".
 type: one of ${list(TYPES)}. Overshirts, blazers, jackets, sweaters, hoodies = LAYER.
@@ -137,7 +137,7 @@ const SCHEMA = {
     weight: enumOf(WEIGHTS), season: enumOf(SEASONS), contexts: { type: 'ARRAY', items: enumOf(OCCASIONS) },
     hero: { type: 'BOOLEAN' }, paletteFail: { type: 'BOOLEAN' }, failReason: { type: 'STRING' },
   },
-  required: ['name', 'type'],
+  required: ['name', 'type', 'colorFamily', 'exactColor', 'pattern', 'fabrics', 'fit', 'formality', 'weight', 'season', 'contexts', 'hero', 'paletteFail'],
 }
 
 const toBase64 = (b: Blob) => new Promise<string>((res, rej) => {
@@ -158,8 +158,17 @@ export async function tagGarment(key: string, model: string, garment: Blob, labe
 
 /** Keeps only valid codes; drops anything off-list. */
 function clean(raw: Record<string, unknown>): Tagging {
-  const one = <T extends string>(opts: readonly { code: T }[], v: unknown) => (opts.some((o) => o.code === v) ? (v as T) : undefined)
-  const many = <T extends string>(opts: readonly { code: T }[], v: unknown) => (Array.isArray(v) ? [...new Set(v.filter((x) => opts.some((o) => o.code === x)) as T[])] : undefined)
+  // Lenient: accept the code or its label, any case ("Tobacco", "tobacco", "TOBACCO", "Smart casual").
+  const norm = (x: unknown) => String(x ?? '').trim().toUpperCase().replace(/[\s-]+/g, '_')
+  const match = <T extends string>(opts: readonly { code: T; label: string }[], v: unknown) =>
+    opts.find((o) => o.code === norm(v) || norm(o.label) === norm(v))?.code
+  const one = <T extends string>(opts: readonly { code: T; label: string }[], v: unknown) => match(opts, v)
+  const many = <T extends string>(opts: readonly { code: T; label: string }[], v: unknown) => {
+    const arr = Array.isArray(v) ? v : typeof v === 'string' ? v.split(/[,;/]/) : null
+    if (!arr) return undefined
+    const out = [...new Set(arr.map((x) => match(opts, x)).filter(Boolean) as T[])]
+    return out.length ? out : undefined
+  }
   const str = (v: unknown, n = 60) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, n) : undefined)
   const bool = (v: unknown) => (typeof v === 'boolean' ? v : undefined)
   const t: Tagging = {
@@ -168,6 +177,11 @@ function clean(raw: Record<string, unknown>): Tagging {
     brand: str(raw.brand), size: str(raw.size, 20), care: str(raw.care, 80), fit: one(FITS, raw.fit), formality: one(FORMALITIES, raw.formality), weight: one(WEIGHTS, raw.weight),
     season: one(SEASONS, raw.season), contexts: many(OCCASIONS, raw.contexts), hero: bool(raw.hero), paletteFail: bool(raw.paletteFail),
     failReason: raw.paletteFail === true ? str(raw.failReason, 60) : undefined,
+  }
+  if (!t.colorFamily) {
+    const words = `${t.exactColor ?? ''} ${t.name ?? ''}`.toLowerCase()
+    t.colorFamily = COLORS.find((c) => c.code !== 'OTHER' && words.includes(c.label.toLowerCase()))?.code
+      ?? (/\b(brown|chocolate|coffee)\b/.test(words) ? 'ESPRESSO' : /\b(khaki|beige|sand|tan)\b/.test(words) ? 'STONE' : /\b(green)\b/.test(words) ? 'OLIVE' : /\b(blue)\b/.test(words) ? 'NAVY' : /\b(white|ivory|ecru)\b/.test(words) ? 'CREAM' : undefined)
   }
   if (t.name) t.name = t.name.charAt(0).toUpperCase() + t.name.slice(1)
   for (const k of Object.keys(t) as (keyof Tagging)[]) if (t[k] === undefined) delete t[k]
