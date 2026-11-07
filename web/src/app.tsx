@@ -327,16 +327,16 @@ export function App() {
 
   /** Re-tag a saved item from its photo, or from a care label photo. Fills empty fields only. */
   /** Saves a label photo with the item, then re-reads all its labels if Gemini is connected. */
-  const addItemLabel = async (id: string, file: File): Promise<string> => {
+  const addItemLabel = async (id: string, file: File, onStatus?: (s: string) => void): Promise<string> => {
     const item = getData().items.find((i) => i.id === id)
     if (!item) return ''
     const n = item.labels ?? 0
     try { await putBlob(labelKey(id, n), await processLabel(file)) } catch { return "Couldn't read that photo." }
     update((d) => ({ ...d, items: d.items.map((i) => (i.id === id ? { ...i, labels: n + 1 } : i)) }))
-    return getSettings().geminiKey ? retag(id) : 'Label saved.'
+    return getSettings().geminiKey ? retag(id, onStatus) : 'Label saved.'
   }
 
-  const retag = async (id: string): Promise<string> => {
+  const retag = async (id: string, onStatus?: (s: string) => void): Promise<string> => {
     const s = getSettings()
     if (!s.geminiKey || !s.geminiModel) { goSetup(); return '' }
     const item = getData().items.find((i) => i.id === id)
@@ -344,7 +344,7 @@ export function App() {
     if (!photo || !item) return 'Add a photo first.'
     try {
       const labels = await labelBlobs(item)
-      const t = await tagQueued(s.geminiKey, s.geminiModel, photo, labels, profileOf(getData()))
+      const t = await tagQueued(s.geminiKey, s.geminiModel, photo, labels, profileOf(getData()), { onStatus })
       update((d) => ({ ...d, items: d.items.map((i) => (i.id === id ? mergeTagging(i, t, labels.length > 0) : i)) }))
       return labels.length ? 'Read from the labels: fibers, size, brand and care.' : 'Filled in the empty fields.'
     } catch (e) {
@@ -455,7 +455,7 @@ export function App() {
           }}
           onTakePhoto={() => push({ kind: 'camera', replaceId: item.id })}
           onPickedPhoto={(f) => replacePhoto(item.id, f)}
-          onRetag={() => retag(item.id)} onAddLabel={(f) => addItemLabel(item.id, f)}
+          onRetag={(cb) => retag(item.id, cb)} onAddLabel={(f, cb) => addItemLabel(item.id, f, cb)}
           labelUrl={(n) => getBlob(labelKey(item.id, n)).then((b) => (b ? URL.createObjectURL(b) : undefined))}
           onFindReplacement={() => openAsk(`Find one specific replacement for [[${item.id}]] ${item.name}, with a link.`)} />
       </div>

@@ -58,10 +58,11 @@ export async function generate(key: string, model: string, body: Record<string, 
     r = await fetch(`${API}/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, generationConfig: gen }), signal: ctrl.signal,
     })
-  } catch {
+  } catch (e) {
     if (ctrl.signal.reason === 'cancel') throw new GeminiError('Skipped', 0, false)
     if (ctrl.signal.reason === 'timeout') throw new GeminiError('Gemini took too long to answer', 0, true)
-    throw new GeminiError('Lost the connection to Gemini', 0, true)
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new GeminiError('Your phone is offline', 0, true)
+    throw new GeminiError(`Lost the connection to Gemini (${(e as Error)?.message || 'network error'})`, 0, true)
   } finally {
     clearTimeout(timer)
     opts.signal?.removeEventListener('abort', onAbort)
@@ -76,7 +77,7 @@ export async function generate(key: string, model: string, body: Record<string, 
     if (r.status === 404) throw new GeminiError(`Model ${model} isn't available for this key`, 404)
     throw new GeminiError(`Gemini error ${r.status}${short ? `: ${short}` : ''}`, r.status, r.status >= 500)
   }
-  return r.json()
+  try { return await r.json() } catch (e) { throw new GeminiError(`The answer was cut off (${(e as Error)?.message || 'network error'})`, 0, true) }
 }
 
 /** Quick round trip to confirm the key and model work. Returns seconds taken. */
@@ -147,13 +148,30 @@ const toBase64 = (b: Blob) => new Promise<string>((res, rej) => {
   r.readAsDataURL(b)
 })
 
-export async function tagGarment(key: string, model: string, garment: Blob, labels: Blob[] = [], profile: Profile = defaultProfile(), signal?: AbortSignal): Promise<Tagging> {
-  const parts: object[] = [{ text: promptFor(profile) }, { text: 'Garment photo:' }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(garment) } }]
-  for (const [n, label] of labels.slice(0, 4).entries()) parts.push({ text: `Label photo ${n + 1}:` }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(label) } })
-  const j = await generate(key, model, { contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, temperature: 0.2 } }, { signal })
+/** Smaller upload = faster and less likely to drop. Falls back to the original if resizing isn't possible. */
+async function shrink(b: Blob, longSide: number, quality: number): Promise<Blob> {
+  try {
+    const bmp = await createImageBitmap(b)
+    const scale = Math.min(1, longSide / Math.max(bmp.width, bmp.height))
+    const c = new OffscreenCanvas(Math.round(bmp.width * scale), Math.round(bmp.height * scale))
+    c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height)
+    bmp.close()
+    return await c.convertToBlob({ type: 'image/jpeg', quality })
+  } catch { return b }
+}
+
+export async function tagGarment(key: string, model: string, garment: Blob, labels: Blob[] = [], profile: Profile = defaultProfile(), signal?: AbortSignal, lite = false, timeoutMs = 60000): Promise<Tagging> {
+  // The garment only needs to show color and cut; labels need enough pixels to read text.
+  const g = await shrink(garment, lite ? 640 : 1024, lite ? 0.7 : 0.8)
+  const ls = await Promise.all(labels.slice(0, 4).map((l) => shrink(l, lite ? 960 : 1280, lite ? 0.75 : 0.85)))
+  const parts: object[] = [{ text: promptFor(profile) }, { text: 'Garment photo:' }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(g) } }]
+  for (const [n, label] of ls.entries()) parts.push({ text: `Label photo ${n + 1}:` }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(label) } })
+  const j = await generate(key, model, { contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, temperature: 0.2 } }, { signal, timeoutMs })
   const text: string | undefined = j?.candidates?.[0]?.content?.parts?.find((p: { text?: string }) => p.text)?.text
-  if (!text) throw new GeminiError('Gemini returned nothing for this photo.')
-  return clean(JSON.parse(text) as Record<string, unknown>)
+  if (!text) throw new GeminiError('Gemini returned nothing for this photo', 0, true)
+  let raw: Record<string, unknown>
+  try { raw = JSON.parse(text) } catch { throw new GeminiError('Gemini sent an incomplete answer', 0, true) }
+  return clean(raw)
 }
 
 /** Keeps only valid codes; drops anything off-list. */
@@ -201,22 +219,46 @@ const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((res, rej)
   signal?.addEventListener('abort', () => { clearTimeout(t); rej(new GeminiError('Skipped')) }, { once: true })
 })
 
+// Keep the screen on while Gemini works: a sleeping phone drops the connection.
+let wake: { release: () => Promise<void> } | null = null
+async function wakeLock(on: boolean) {
+  try {
+    if (on && !wake && typeof document !== 'undefined' && document.visibilityState === 'visible') wake = (await (navigator as any).wakeLock?.request('screen')) ?? null
+    else if (!on && wake) { const w = wake; wake = null; await w.release() }
+  } catch { wake = null }
+}
+
+/** Total time to keep trying before giving up. Patience beats making you tap Retry. */
+export const TAG_BUDGET_MS = 120000
+
 export async function tagQueued(key: string, model: string, garment: Blob, labels: Blob[] = [], profile?: Profile, opts: TagOpts = {}): Promise<Tagging> {
   opts.onStatus?.(running >= 2 ? 'Waiting for Gemini…' : 'Tagging…')
   await slot()
+  wakeLock(true)
+  const start = Date.now()
+  let note = 'Tagging…'
+  const tick = () => opts.onStatus?.(`${note} ${Math.round((Date.now() - start) / 1000)} s`)
+  const slow = setInterval(tick, 1000)
   try {
-    for (let attempt = 0; ; attempt++) {
-      opts.onStatus?.(attempt ? `Tagging… (try ${attempt + 1} of 3)` : 'Tagging…')
+    let failures = 0
+    for (let attempt = 1; ; attempt++) {
+      const left = TAG_BUDGET_MS - (Date.now() - start)
       try {
-        return await tagGarment(key, model, garment, labels, profile, opts.signal)
+        // After two dropped attempts, send smaller photos.
+        return await tagGarment(key, model, garment, labels, profile, opts.signal, failures >= 2, Math.max(15000, Math.min(60000, left)))
       } catch (e) {
         const err = e as GeminiError
-        if (!err.retryable || attempt >= 2 || opts.signal?.aborted) throw e
-        const wait = err.status === 429 ? 20 : 5
-        for (let s = wait; s > 0; s--) { opts.onStatus?.(`${err.message}. Retrying in ${s} s…`); await sleep(1000, opts.signal) }
+        failures++
+        const wait = err.status === 429 ? 20000 : Math.min(8000, 2000 * failures)
+        if (!err.retryable || opts.signal?.aborted || Date.now() - start + wait + 15000 > TAG_BUDGET_MS) throw e
+        note = err.status ? 'Gemini is busy, still trying…' : 'Connection hiccup, still trying…'
+        tick()
+        await sleep(wait, opts.signal)
       }
     }
   } finally {
+    clearInterval(slow)
     release()
+    if (running === 0) wakeLock(false)
   }
 }

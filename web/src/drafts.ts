@@ -125,16 +125,6 @@ function maybeTag(key: string) {
 
 const aborts = new Map<string, AbortController>()
 
-// Keep the screen on while Gemini works: a sleeping phone drops the connection.
-let wake: { release: () => Promise<void> } | null = null
-async function syncWakeLock() {
-  const busy = drafts.some((d) => d.tagging === 'busy')
-  try {
-    if (busy && !wake && document.visibilityState === 'visible') wake = await (navigator as any).wakeLock?.request('screen') ?? null
-    else if (!busy && wake) { await wake.release(); wake = null }
-  } catch { wake = null }
-}
-
 export function runTag(key: string) {
   const d = find(key)
   const s = getSettings()
@@ -143,7 +133,6 @@ export function runTag(key: string) {
   const ctrl = new AbortController()
   aborts.set(key, ctrl)
   patch(key, { tagging: 'busy', tagError: undefined, tagStatus: 'Tagging…', retryable: false, retag: false })
-  syncWakeLock()
   tagQueued(s.geminiKey, s.geminiModel, d.photo.full, d.labels.map((l) => l.blob), profileOf(getData()), {
     signal: ctrl.signal,
     onStatus: (t) => { if (find(key)?.tagging === 'busy') patch(key, { tagStatus: t }) },
@@ -155,7 +144,6 @@ export function runTag(key: string) {
     })
     .finally(() => {
       if (aborts.get(key) === ctrl) aborts.delete(key)
-      syncWakeLock()
       if (find(key)?.retag) runTag(key)
     })
 }
@@ -171,7 +159,6 @@ if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return
     for (const d of drafts) if (d.tagging === 'error' && d.retryable) runTag(d.key)
-    syncWakeLock()
   })
 }
 

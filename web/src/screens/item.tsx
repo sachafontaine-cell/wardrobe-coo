@@ -39,8 +39,8 @@ const DETAILS: Text[] = [
 interface Props {
   item: Item
   canTag: boolean
-  onRetag: () => Promise<string>
-  onAddLabel: (f: File) => Promise<string>
+  onRetag: (onStatus: (s: string) => void) => Promise<string>
+  onAddLabel: (f: File, onStatus: (s: string) => void) => Promise<string>
   labelUrl: (n: number) => Promise<string | undefined>
   onFindReplacement: () => void
   onBack: () => void
@@ -57,8 +57,12 @@ export function ItemDetail({ item, canTag, onRetag, onAddLabel, labelUrl, onFind
   const fileRef = useRef<HTMLInputElement>(null)
   const labelRef = useRef<HTMLInputElement>(null)
   const [tagMsg, setTagMsg] = useState('')
-  const run = (label?: File) => { setTagMsg(label ? 'Reading the label…' : 'Tagging…'); (label ? onAddLabel(label) : onRetag()).then(setTagMsg) }
-  const busy = tagMsg === 'Tagging…' || tagMsg === 'Reading the label…'
+  const [busy, setBusy] = useState(false)
+  const run = (label?: File) => {
+    setBusy(true)
+    setTagMsg(label ? 'Reading the label…' : 'Tagging…')
+    ;(label ? onAddLabel(label, setTagMsg) : onRetag(setTagMsg)).then((m) => { setBusy(false); setTagMsg(m) })
+  }
   const [labelUrls, setLabelUrls] = useState<string[]>([])
   const [viewing, setViewing] = useState<string | null>(null)
   useEffect(() => {
@@ -124,7 +128,12 @@ export function ItemDetail({ item, canTag, onRetag, onAddLabel, labelUrl, onFind
           <button class="btn btn-secondary btn-sm press grow" disabled={busy} onClick={() => labelRef.current?.click()}>Add label photo</button>
         </div>
       )}
-      {tagMsg && <div class="muted">{tagMsg}</div>}
+      {tagMsg && (
+        <div class="row muted" style={{ gap: 6 }}>
+          {busy && <div class="spinner" style={{ width: 14, height: 14 }} />}
+          <span class="grow">{tagMsg}{busy ? ' · keep the app open' : ''}</span>
+        </div>
+      )}
       <button class="btn btn-primary btn-sm press" onClick={onFindReplacement}>Find a replacement</button>
       <input ref={labelRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => {
         const f = (e.target as HTMLInputElement).files?.[0]
