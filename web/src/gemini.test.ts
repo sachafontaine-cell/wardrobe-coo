@@ -58,10 +58,10 @@ describe('patient tagging', () => {
     vi.useRealTimers()
   })
   it('does not retry a bad key', async () => {
-    const f = vi.fn(async () => new Response('{"error":{"message":"API key not valid"}}', { status: 400 }))
-    vi.stubGlobal('fetch', f)
-    await expect(tagQueued('k', 'gemini-3.8-flash', new Blob(['x']))).rejects.toThrow()
-    expect(f).toHaveBeenCalledTimes(1)
+    let tries = 0
+    vi.stubGlobal('fetch', vi.fn(async (u: string) => { if (String(u).includes('Generate')) tries++; return new Response('{"error":{"message":"API key not valid"}}', { status: 400 }) }))
+    await expect(tagQueued('bad', 'gemini-3.8-flash', new Blob(['x']))).rejects.toThrow()
+    expect(tries).toBe(1)
   })
 })
 
@@ -103,5 +103,30 @@ describe('parseLoose', () => {
     expect(parseLoose('{"a":1,"b":["X","Y"],"c":"unfin')).toEqual({ a: 1, b: ['X', 'Y'] })
     expect(parseLoose('{"a":"x, y","b":2,')).toEqual({ a: 'x, y', b: 2 })
     expect(parseLoose('nothing')).toBeUndefined()
+  })
+})
+
+describe('busy models', () => {
+  it('moves to another model as soon as one is overloaded, and remembers it', async () => {
+    const used: string[] = []
+    const ok = answer({ name: 'Navy polo', type: 'POLO' }) as unknown as () => Promise<Response>
+    const store: Record<string, string> = {}
+    vi.stubGlobal('localStorage', { getItem: (k: string) => store[k] ?? null, setItem: (k: string, v: string) => { store[k] = v } })
+    vi.stubGlobal('fetch', vi.fn(async (u: string) => {
+      if (String(u).includes('/models?')) return new Response(JSON.stringify({ models: ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'].map((n) => ({ name: `models/${n}`, supportedGenerationMethods: ['generateContent'] })) }))
+      const m = String(u).split('/models/')[1].split(':')[0]
+      used.push(m)
+      if (m === 'gemini-3.8-flash') return new Response('{"error":{"message":"This model is currently experiencing high demand."}}', { status: 503 })
+      return ok()
+    }))
+    const t = await tagQueued('k2', 'gemini-3.8-flash', new Blob(['x']))
+    expect(t.type).toBe('POLO')
+    expect(used).toEqual(['gemini-3.8-flash', 'gemini-3.6-flash'])
+    // Next time, the model that worked goes first.
+    used.length = 0
+    await tagQueued('k2', 'gemini-3.8-flash', new Blob(['x']))
+    expect(used).toEqual(['gemini-3.6-flash'])
+    vi.unstubAllGlobals()
+    vi.stubGlobal('FileReader', FakeReader)
   })
 })

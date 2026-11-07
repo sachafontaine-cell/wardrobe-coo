@@ -1,7 +1,7 @@
 // Ask: a Gemini chat that knows the closet, the profile and today. Uses Google Search
 // for shopping and trips. Changes come back as a small actions block the app applies.
 import { type AppData, COLOR_BY, type Item, type ItemType, type Occasion, type Profile, profileOf, typeLabel } from './model'
-import { GeminiError, generate } from './gemini'
+import { GeminiError, generate, withModels } from './gemini'
 import { gaps } from './review'
 
 export interface Turn { role: 'user' | 'model'; text: string }
@@ -103,7 +103,7 @@ export async function ask(key: string, model: string, system: string, turns: Tur
   let j: any
   for (let attempt = 0; ; attempt++) {
     try {
-      j = await generate(key, model, body(search), { timeoutMs: 90000 })
+      j = await withModels(key, model, (m) => generate(key, m, body(search), { timeoutMs: 90000 }))
       break
     } catch (e) {
       const err = e as GeminiError

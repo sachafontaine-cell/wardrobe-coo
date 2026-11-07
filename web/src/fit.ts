@@ -1,6 +1,6 @@
 // Fit check: compare weight, waist and photos with last time; pick items worth trying on.
 import { type AppData, type Item, profileOf } from './model'
-import { generate } from './gemini'
+import { generate, withModels } from './gemini'
 
 const TOPS = ['POLO', 'TEE', 'SHIRT', 'LAYER']
 const BOTTOMS = ['PANT', 'SHORT', 'SUIT']
@@ -44,7 +44,7 @@ export async function comparePhotos(key: string, model: string, before: Blob, af
     generationConfig: { responseMimeType: 'application/json', temperature: 0.1, responseSchema: { type: 'OBJECT', properties: {
       change: { type: 'STRING', enum: ['none', 'slimmer', 'heavier'] }, areas: { type: 'ARRAY', items: { type: 'STRING' } }, note: { type: 'STRING' } }, required: ['change'] } },
   }
-  const j = await generate(key, model, body)
+  const j = await withModels(key, model, (m) => generate(key, m, body))
   const t = JSON.parse(j?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}')
   return { change: ['slimmer', 'heavier'].includes(t.change) ? t.change : 'none', areas: Array.isArray(t.areas) ? t.areas : [], note: typeof t.note === 'string' ? t.note : '' }
 }

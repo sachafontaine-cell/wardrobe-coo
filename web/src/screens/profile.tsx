@@ -3,7 +3,7 @@ import { type AppData, type Profile as ProfileData, profileOf } from '../model'
 import { SECTIONS, SectionSheet } from './profileSections'
 import { nextReviewDate } from '../review'
 import { prettyDate } from '../dates'
-import { MODEL_LOGIC, pickModel, tagLog, testGemini } from '../gemini'
+import { MODEL_LOGIC, pickModel, tagLog, testGemini, workingModel } from '../gemini'
 import { APPS_SCRIPT, connectGoogle, disconnectGoogle } from '../google'
 import { getSettings, setSettings, useSettings } from '../settings'
 import { Crest } from '../ui'
@@ -104,13 +104,13 @@ function GeminiCard({ connected, model }: { connected: boolean; model?: string }
       </div>
       {connected ? (
         <>
-          <div class="muted">Using {model}. Your key is stored only on this phone.</div>
+          <div class="muted">Using {workingModel() && workingModel() !== model ? `${workingModel()} (${model} was busy)` : model}. If a model is busy, the app switches to another one. Your key is stored only on this phone.</div>
           <div class="row" style={{ gap: 16 }}>
             <button class="link" disabled={busy} onClick={() => {
               const s = getSettings()
               if (!s.geminiKey || !s.geminiModel) return
               setBusy(true); setMsg('Testing…')
-              testGemini(s.geminiKey, s.geminiModel).then((sec) => setMsg(`Working ✓ answered in ${sec.toFixed(1)} s`)).catch((e) => setMsg(`Not working: ${(e as Error).message}`)).finally(() => setBusy(false))
+              testGemini(s.geminiKey, s.geminiModel).then((r) => setMsg(`Working ✓ ${r.model} answered in ${r.sec.toFixed(1)} s${r.model !== s.geminiModel ? ` (${s.geminiModel} is busy right now, so the app uses ${r.model})` : ''}`)).catch((e) => setMsg(`Not working: ${(e as Error).message}`)).finally(() => setBusy(false))
             }}>Test</button>
             <button class="link" onClick={() => { setSettings({ geminiKey: undefined, geminiModel: undefined, modelLogic: undefined }); setMsg('') }}>Remove key</button>
           </div>

@@ -91,7 +91,7 @@ export async function generate(key: string, model: string, body: Record<string, 
 export type Stage = 'send' | 'look' | 'write'
 export interface StreamResult { text: string; finish?: string; cut?: 'runaway' | 'stall'; firstMs?: number }
 /** Tunable for tests. */
-export const TIMING = { firstMs: 45000, idleMs: 20000 }
+export const TIMING = { firstMs: 30000, idleMs: 20000 }
 
 export async function streamGenerate(key: string, model: string, body: Record<string, unknown>,
   opts: { totalMs: number; signal?: AbortSignal; thinking?: boolean; onStage?: (s: Stage, chars: number) => void }): Promise<StreamResult> {
@@ -214,11 +214,13 @@ export function parseLoose(text: string): Record<string, unknown> | undefined {
 }
 
 /** Quick round trip to confirm the key and model work. Returns seconds taken. */
-export async function testGemini(key: string, model: string): Promise<number> {
-  const t0 = performance.now()
-  const j = await generate(key, model, { contents: [{ role: 'user', parts: [{ text: 'Reply with the word OK.' }] }] }, { timeoutMs: 30000 })
-  if (!j?.candidates?.[0]) throw new GeminiError('Gemini answered with nothing')
-  return (performance.now() - t0) / 1000
+export async function testGemini(key: string, model: string): Promise<{ sec: number; model: string }> {
+  return withModels(key, model, async (m) => {
+    const t0 = performance.now()
+    const j = await generate(key, m, { contents: [{ role: 'user', parts: [{ text: 'Reply with the word OK.' }] }] }, { timeoutMs: 20000 })
+    if (!j?.candidates?.[0]) throw new GeminiError('Gemini answered with nothing')
+    return { sec: (performance.now() - t0) / 1000, model: m }
+  }, 4)
 }
 
 /** Finds the best current "Flash" model this key can use. */
@@ -232,19 +234,59 @@ async function modelNames(key: string): Promise<string[]> {
 
 const byVersion = (a: string, b: string) => parseFloat(b.slice(7)) - parseFloat(a.slice(7))
 let names$: Promise<string[]> | undefined
-/** A second model to try when the main one keeps failing on a photo. */
-export async function fallbackModel(key: string, current: string): Promise<string | undefined> {
-  try {
-    const names = await (names$ ??= modelNames(key))
-    const stable = names.filter((n) => /^gemini-[\d.]+-flash$/.test(n) && n !== current).sort(byVersion)
-    if (stable[0]) return stable[0]
-    if (current !== 'gemini-flash-latest' && names.includes('gemini-flash-latest')) return 'gemini-flash-latest'
-    return names.filter((n) => /^gemini-[\d.]+-flash-lite$/.test(n) && n !== current).sort(byVersion)[0]
-  } catch { names$ = undefined; return undefined }
+let namesKey = ''
+const namesFor = (key: string) => {
+  if (!names$ || namesKey !== key) { namesKey = key; names$ = modelNames(key).catch((e) => { names$ = undefined; throw e }) }
+  return names$
+}
+
+// ---- Model health: Google's free tier often overloads the newest model ("high demand").
+// When a model is busy or slow, the app moves to the next one and remembers which one works.
+const HEALTH = 'wardrobe-coo:models'
+interface Health { busy: Record<string, number>; good?: string }
+const readHealth = (): Health => { try { return { busy: {}, ...JSON.parse(localStorage.getItem(HEALTH) ?? '{}') } } catch { return { busy: {} } } }
+const writeHealth = (h: Health) => { try { localStorage.setItem(HEALTH, JSON.stringify(h)) } catch { /* no storage */ } }
+export function markBusy(model: string, minutes = 15) { const h = readHealth(); h.busy[model] = Date.now() + minutes * 60000; if (h.good === model) h.good = undefined; writeHealth(h) }
+export function markGood(model: string) { const h = readHealth(); delete h.busy[model]; h.good = model; writeHealth(h) }
+/** The model that answered last, if it isn't the saved one. */
+export const workingModel = (): string | undefined => readHealth().good
+
+/** Busy, slow or out of free quota: worth trying another model rather than waiting. */
+export const isOverload = (e: unknown) => {
+  const err = e as GeminiError
+  return [429, 500, 502, 503, 504].includes(err.status) || /too long|No response|went quiet/.test(err.message)
+}
+
+/** Models to try, best first: the one that last worked, the saved one, then other Flash models. */
+export async function modelOrder(key: string, preferred: string): Promise<string[]> {
+  let names: string[] = []
+  try { names = await namesFor(key) } catch { /* offline: just the saved model */ }
+  const h = readHealth()
+  const flash = names.filter((n) => /^gemini-[\d.]+-flash$/.test(n)).sort(byVersion)
+  const lite = names.filter((n) => /^gemini-[\d.]+-flash-lite$/.test(n)).sort(byVersion)
+  const pool = [...new Set([h.good, preferred, ...flash.slice(0, 3), ...(names.includes('gemini-flash-latest') ? ['gemini-flash-latest'] : []), ...lite.slice(0, 1)])]
+    .filter((n): n is string => !!n && (!names.length || names.includes(n) || n === preferred))
+  const now = Date.now()
+  const busy = (n: string) => (h.busy[n] ?? 0) > now
+  return [...pool.filter((n) => !busy(n)), ...pool.filter(busy).sort((a, b) => h.busy[a] - h.busy[b])]
+}
+
+/** Runs one Gemini call, moving to the next model when one is overloaded. */
+export async function withModels<T>(key: string, preferred: string, run: (model: string) => Promise<T>, maxModels = 3): Promise<T> {
+  const order = (await modelOrder(key, preferred)).slice(0, maxModels)
+  let last: unknown
+  for (const m of order) {
+    try { const out = await run(m); markGood(m); return out } catch (e) {
+      last = e
+      if (!isOverload(e)) throw e
+      markBusy(m)
+    }
+  }
+  throw last
 }
 
 export async function pickModel(key: string): Promise<string> {
-  const names = await modelNames(key)
+  const names = await namesFor(key)
   // Newest stable Flash (e.g. gemini-3.8-flash). The "latest" alias can jump to a slow preview.
   const stable = names.filter((n) => /^gemini-[\d.]+-flash$/.test(n)).sort((a, b) => parseFloat(b.slice(7)) - parseFloat(a.slice(7)))
   if (stable.length) return stable[0]
@@ -416,28 +458,34 @@ export async function tagQueued(key: string, model: string, garment: Blob, label
   const tick = () => opts.onStatus?.(`${retryNote}${note} ${Math.round((Date.now() - start) / 1000)} s`)
   const slow = setInterval(tick, 1000)
   const onStage = (s: Stage, chars: number) => { note = s === 'send' ? 'Sending photos…' : s === 'look' ? 'Gemini is looking…' : `Writing tags (${chars})…`; tick() }
+  const short = (m: string) => m.replace(/^gemini-/, '')
   try {
+    const order = await modelOrder(key, model)
     let failures = 0
-    let fb: string | undefined | null = null
     for (let attempt = 1; ; attempt++) {
       const left = TAG_BUDGET_MS - (Date.now() - start)
-      // After two misses: alternate with a second model, and send smaller photos.
-      if (failures >= 2 && fb === null) fb = await fallbackModel(key, model)
-      const m = failures >= 2 && failures % 2 === 0 && fb ? fb : model
+      // Each miss moves to the next model; after a full round, smaller photos too.
+      const m = order[(attempt - 1) % order.length]
       try {
-        return await tagGarment(key, m, garment, labels, profile, { signal: opts.signal, lite: failures >= 2, timeoutMs: Math.max(15000, Math.min(60000, left)), onStage })
+        const t = await tagGarment(key, m, garment, labels, profile, { signal: opts.signal, lite: failures >= order.length, timeoutMs: Math.max(15000, Math.min(60000, left)), onStage })
+        markGood(m)
+        return t
       } catch (e) {
         const err = e as GeminiError
         failures++
-        const wait = err.status === 429 ? 20000 : Math.min(8000, 2000 * failures)
-        // "Busy" (free limit) is worth waiting out longer; other misses get the 2-minute budget.
-        const over = err.status === 429 ? attempt >= 10 : Date.now() - start + wait + 15000 > TAG_BUDGET_MS
+        if (isOverload(err)) markBusy(m)
+        const next = order[attempt % order.length]
+        // A busy model: switch right away. Every model busy: pause before the next round.
+        const roundDone = attempt % order.length === 0
+        const wait = roundDone ? (err.status === 429 ? 20000 : 8000) : 1000
+        const over = Date.now() - start + wait + 15000 > TAG_BUDGET_MS && !(err.status === 429 && attempt < 10)
         if (!err.retryable || opts.signal?.aborted || over) {
-          if (err.retryable && failures > 1) throw new GeminiError(`${err.message} (${failures} tries, ${Math.round((Date.now() - start) / 1000)} s)`, err.status, true)
+          if (err.retryable && failures > 1) throw new GeminiError(`${err.message} (${failures} tries on ${new Set(order.slice(0, failures)).size} models, ${Math.round((Date.now() - start) / 1000)} s)`, err.status, true)
           throw e
         }
-        retryNote = `${err.message}. Try ${failures + 1}: `
-        note = 'waiting…'
+        const busyMsg = isOverload(err) ? `${short(m)} is busy` : err.message
+        retryNote = next !== m ? `${busyMsg}. Trying ${short(next)}: ` : `${busyMsg}. Try ${failures + 1}: `
+        note = roundDone ? 'all busy, waiting…' : 'starting…'
         tick()
         await sleep(wait, opts.signal)
       }
