@@ -41,7 +41,7 @@ describe('patient tagging', () => {
   it('gives up only after about two minutes, with the reason', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
-    const p = tagQueued('k', 'gemini-3.8-flash', new Blob(['x'])).catch((e) => e as Error)
+    const p = tagQueued('k', 'gemini-3.8-flash', new Blob(['x'])).then(() => new Error('no error'), (e: Error) => e)
     await vi.advanceTimersByTimeAsync(60000)
     let done = false
     p.then(() => { done = true })
