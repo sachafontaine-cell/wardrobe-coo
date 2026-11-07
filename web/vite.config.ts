@@ -34,6 +34,9 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,png,svg,ttf}'],
         navigateFallback: '/wardrobe-coo/index.html',
+        // A new version takes over the open app right away, so it can reload into it.
+        skipWaiting: true,
+        clientsClaim: true,
       },
     }),
   ],

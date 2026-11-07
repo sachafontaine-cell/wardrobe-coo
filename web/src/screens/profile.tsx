@@ -11,6 +11,7 @@ import { Crest } from '../ui'
 interface Props {
   data: AppData
   version: string
+  onCheckUpdate: () => Promise<boolean>
   onExport: () => Promise<void>
   onImport: (f: File) => Promise<string>
   onBackupNow: () => Promise<void>
@@ -21,7 +22,7 @@ interface Props {
   today: string
 }
 
-export function Profile({ data, version, onExport, onImport, onBackupNow, onConnected, onProfile, onRunCheck, onFitCheck, today }: Props) {
+export function Profile({ data, version, onCheckUpdate, onExport, onImport, onBackupNow, onConnected, onProfile, onRunCheck, onFitCheck, today }: Props) {
   const profile = profileOf(data)
   const [open, setOpen] = useState<(typeof SECTIONS)[number] | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -56,7 +57,7 @@ export function Profile({ data, version, onExport, onImport, onBackupNow, onConn
       <div class="card">
         {kv('Items in closet', data.items.filter((i) => i.status === 'ACTIVE').length)}
         {kv('Outfits logged (14 days)', data.history.length)}
-        {kv('Version', version)}
+        <div class="kv"><span class="k">Version</span><span class="v"><UpdateCheck version={version} onCheck={onCheckUpdate} /></span></div>
       </div>
 
       <div class="card card-pad stack" style={{ gap: 10 }}>
@@ -132,6 +133,13 @@ function GeminiCard({ connected, model }: { connected: boolean; model?: string }
         </>
       )}
     </div>
+  )
+}
+
+function UpdateCheck({ version, onCheck }: { version: string; onCheck: () => Promise<boolean> }) {
+  const [msg, setMsg] = useState('')
+  return (
+    <span>{version} · {msg || <button class="link" onClick={() => { setMsg('Checking…'); onCheck().then((found) => setMsg(found ? 'Updating…' : 'Up to date')) }}>Check for update</button>}</span>
   )
 }
 

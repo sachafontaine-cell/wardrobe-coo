@@ -18,6 +18,7 @@ import { getSettings, setSettings, useSettings } from './settings'
 import { uploadBackup } from './google'
 import { MODEL_LOGIC, type Tagging, pickModel, tagQueued } from './gemini'
 import { Icons, Toast } from './ui'
+import { applyUpdate, checkForUpdate, onUpdateReady, setHomeCheck } from './update'
 import { Today } from './screens/today'
 import { Closet } from './screens/closet'
 import { ItemDetail } from './screens/item'
@@ -25,7 +26,7 @@ import { Camera } from './screens/camera'
 import { Review } from './screens/review'
 import { Profile } from './screens/profile'
 
-const VERSION = '0.5.2'
+const VERSION = '0.5.3'
 
 type Tab = 'today' | 'closet' | 'profile'
 type Sub = { kind: 'detail'; id: string } | { kind: 'camera'; replaceId?: string } | { kind: 'review' } | { kind: 'ask' } | { kind: 'check'; force?: boolean } | { kind: 'fit' }
@@ -121,7 +122,7 @@ export function App() {
   const [tab, setTab] = useState<Tab>('today')
   const [stack, setStack] = useState<Sub[]>([])
   const [query, setQuery] = useState('')
-  const [toast, setToast] = useState<{ text: string; action?: string; run?: () => void } | null>(null)
+  const [toast, setToast] = useState<{ text: string; action?: string; run?: () => void; sticky?: boolean } | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [askBusy, setAskBusy] = useState(false)
   const [prefill, setPrefill] = useState<string | undefined>()
@@ -162,8 +163,12 @@ export function App() {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
+  // A new version is ready: offer it now; it also applies itself next time you leave the app.
+  setHomeCheck(() => stack.length === 0)
+  useEffect(() => onUpdateReady(() => setToast({ text: 'New version ready', action: 'Reload', run: applyUpdate, sticky: true })), [])
+
   useEffect(() => {
-    if (!toast) return
+    if (!toast || toast.sticky) return
     const t = setTimeout(() => setToast(null), 4000)
     return () => clearTimeout(t)
   }, [toast])
@@ -494,7 +499,7 @@ export function App() {
         onOpen={(id) => push({ kind: 'detail', id })} onAdd={startAdd} toReview={toReview}
         onFilters={(f) => update((d) => ({ ...d, prefs: { ...d.prefs, closetFilters: f } }))}
         onSort={(s) => update((d) => ({ ...d, prefs: { ...d.prefs, closetSort: s } }))} />}
-      {tab === 'profile' && <Profile data={data} version={VERSION} onExport={exportBackup} onImport={importBackup} today={today}
+      {tab === 'profile' && <Profile data={data} version={VERSION} onCheckUpdate={checkForUpdate} onExport={exportBackup} onImport={importBackup} today={today}
         onBackupNow={backupToDrive} onConnected={() => { refreshContext(true).then(autoBackup) }}
         onProfile={(p) => {
           const moved = p.location.lat !== profileOf(getData()).location.lat
