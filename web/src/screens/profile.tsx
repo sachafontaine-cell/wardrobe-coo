@@ -46,23 +46,25 @@ export function Profile({ data, version, onCheckUpdate, onExport, onImport, onBa
       </div>
 
       <div class="card">
+        {kv('Items in closet', data.items.filter((i) => i.status === 'ACTIVE').length)}
+        {kv('Outfits logged (14 days)', data.history.length)}
+      </div>
+
+      <div class="card">
         <div class="kv"><span class="k">Next closet check</span><span class="v">{prettyDate(nextReviewDate(today))}</span></div>
         <button class="kv" onClick={onRunCheck}><span>Run closet check now</span><span class="v muted">›</span></button>
         <button class="kv" onClick={onFitCheck}><span>Fit check</span><span class="v muted">›</span></button>
       </div>
 
       <GeminiCard connected={!!s.geminiKey} model={s.geminiModel} />
-      <GoogleCard email={s.google?.email} connected={!!s.google} lastBackup={data.prefs.lastBackup} onBackupNow={onBackupNow} onConnected={onConnected} />
-
-      <div class="card">
-        {kv('Items in closet', data.items.filter((i) => i.status === 'ACTIVE').length)}
-        {kv('Outfits logged (14 days)', data.history.length)}
-        <div class="kv"><span class="k">Version</span><span class="v"><UpdateCheck version={version} onCheck={onCheckUpdate} /></span></div>
-      </div>
+      <GoogleCard email={s.google?.email} connected={!!s.google} onConnected={onConnected} />
 
       <div class="card card-pad stack" style={{ gap: 10 }}>
-        <div style={{ fontWeight: 600 }}>Backup file</div>
-        <div class="muted">Save a copy anywhere, or restore one (including from Drive).</div>
+        <div style={{ fontWeight: 600 }}>Backup &amp; restore</div>
+        {s.google
+          ? <DriveBackup lastBackup={data.prefs.lastBackup} onBackupNow={onBackupNow} />
+          : <div class="muted">Connect Google Calendar above to also back up to Drive weekly.</div>}
+        <div class="muted">Or save a backup file anywhere, and restore one (including a Drive backup).</div>
         <div class="row" style={{ gap: 8 }}>
           <button class="btn btn-secondary btn-sm press grow" onClick={() => { setStatus('Preparing…'); onExport().then(() => setStatus('')).catch(() => setStatus('Backup failed.')) }}>Save backup</button>
           <button class="btn btn-secondary btn-sm press grow" onClick={() => fileRef.current?.click()}>Restore</button>
@@ -73,6 +75,10 @@ export function Profile({ data, version, onCheckUpdate, onExport, onImport, onBa
           ;(e.target as HTMLInputElement).value = ''
           if (f) { setStatus('Restoring…'); onImport(f).then(setStatus) }
         }} />
+      </div>
+
+      <div class="card">
+        <div class="kv"><span class="k">Version</span><span class="v"><UpdateCheck version={version} onCheck={onCheckUpdate} /></span></div>
       </div>
 
       {open && <SectionSheet section={open} profile={profile} onClose={() => setOpen(null)} onSave={(p) => { onProfile(p); setOpen(null) }} />}
@@ -160,9 +166,19 @@ function TagLog() {
   )
 }
 
-function GoogleCard({ connected, email, lastBackup, onBackupNow, onConnected }: {
-  connected: boolean; email?: string; lastBackup?: string; onBackupNow: () => Promise<void>; onConnected: () => void
-}) {
+function DriveBackup({ lastBackup, onBackupNow }: { lastBackup?: string; onBackupNow: () => Promise<void> }) {
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  return (
+    <>
+      <div class="muted">Backs up to your Google Drive weekly. Last backup: {lastBackup ? prettyDate(lastBackup) : 'not yet'}.</div>
+      <div><button class="link" disabled={busy} onClick={() => { setBusy(true); setMsg('Backing up…'); onBackupNow().then(() => setMsg('Backed up to Drive.')).catch(() => setMsg("Backup didn't finish. Try again.")).finally(() => setBusy(false)) }}>Back up to Drive now</button></div>
+      {msg && <div class="muted">{msg}</div>}
+    </>
+  )
+}
+
+function GoogleCard({ connected, email, onConnected }: { connected: boolean; email?: string; onConnected: () => void }) {
   const [url, setUrl] = useState('')
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
@@ -179,22 +195,18 @@ function GoogleCard({ connected, email, lastBackup, onBackupNow, onConnected }: 
   return (
     <div class="card card-pad stack" style={{ gap: 10 }}>
       <div class="row">
-        <div class="grow" style={{ fontWeight: 600 }}>Google · calendar + auto backup</div>
+        <div class="grow" style={{ fontWeight: 600 }}>Google Calendar</div>
         {connected && <span class="status-ok" style={{ fontSize: 14 }}>✓ Connected</span>}
       </div>
       {connected ? (
         <>
-          <div class="muted">{email ? `${email}. ` : ''}Reads today's calendar. Backs up your closet to Drive weekly.</div>
-          <div class="muted">Last backup: {lastBackup ? prettyDate(lastBackup) : 'not yet'}</div>
-          <div class="row" style={{ gap: 16 }}>
-            <button class="link" disabled={busy} onClick={() => { setBusy(true); setMsg('Backing up…'); onBackupNow().then(() => setMsg('Backed up to Drive.')).catch(() => setMsg("Backup didn't finish. Try again.")).finally(() => setBusy(false)) }}>Back up now</button>
-            <button class="link" onClick={disconnectGoogle}>Disconnect</button>
-          </div>
+          <div class="muted">{email ? `${email}. ` : ''}Reads today's events to dress you for them.</div>
+          <div><button class="link" onClick={disconnectGoogle}>Disconnect</button></div>
           {msg && <div class="muted">{msg}</div>}
         </>
       ) : (
         <>
-          <div class="muted">A small script in your own Google account. Easiest on a computer: open this app's link there.</div>
+          <div class="muted">Reads today's events, and adds weekly Drive backups. A small script in your own Google account. Easiest on a computer: open this app's link there.</div>
           <ol class="steps">
             <li><button class="link" onClick={copy}>{copied ? 'Copied ✓' : 'Copy the script'}</button></li>
             <li>Open <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com</a> (new project). Select all, paste, then Save.</li>
