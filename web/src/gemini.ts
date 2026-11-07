@@ -63,11 +63,10 @@ export async function generate(key: string, model: string, body: Record<string, 
     if (ctrl.signal.reason === 'timeout') throw new GeminiError('Gemini took too long to answer', 0, true)
     if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new GeminiError('Your phone is offline', 0, true)
     throw new GeminiError(`Lost the connection to Gemini (${(e as Error)?.message || 'network error'})`, 0, true)
-  } finally {
-    clearTimeout(timer)
-    opts.signal?.removeEventListener('abort', onAbort)
   }
+  const done = () => { clearTimeout(timer); opts.signal?.removeEventListener('abort', onAbort) }
   if (!r.ok) {
+    done()
     let msg = ''
     try { msg = String((await r.json())?.error?.message ?? '') } catch { /* not JSON */ }
     if (r.status === 400 && thinking && /think/i.test(msg)) return generate(key, model, body, { ...opts, thinking: false })
@@ -77,7 +76,141 @@ export async function generate(key: string, model: string, body: Record<string, 
     if (r.status === 404) throw new GeminiError(`Model ${model} isn't available for this key`, 404)
     throw new GeminiError(`Gemini error ${r.status}${short ? `: ${short}` : ''}`, r.status, r.status >= 500)
   }
-  try { return await r.json() } catch (e) { throw new GeminiError(`The answer was cut off (${(e as Error)?.message || 'network error'})`, 0, true) }
+  // The time limit covers downloading the answer too, so nothing can hang.
+  try { return await r.json() } catch (e) {
+    if (ctrl.signal.reason === 'cancel') throw new GeminiError('Skipped', 0, false)
+    throw new GeminiError(ctrl.signal.reason === 'timeout' ? 'Gemini took too long to answer' : `The answer was cut off (${(e as Error)?.message || 'network error'})`, 0, true)
+  } finally { done() }
+}
+
+// ---- Streaming: tagging reads the answer as it is written ----
+// A steady trickle keeps phone networks from dropping a quiet connection, a stall is
+// noticed in seconds instead of minutes, and a reply that runs on (a known Gemini
+// glitch with structured answers) is cut short and the finished fields kept.
+
+export type Stage = 'send' | 'look' | 'write'
+export interface StreamResult { text: string; finish?: string; cut?: 'runaway' | 'stall'; firstMs?: number }
+/** Tunable for tests. */
+export const TIMING = { firstMs: 45000, idleMs: 20000 }
+
+export async function streamGenerate(key: string, model: string, body: Record<string, unknown>,
+  opts: { totalMs: number; signal?: AbortSignal; thinking?: boolean; onStage?: (s: Stage, chars: number) => void }): Promise<StreamResult> {
+  const gen = { ...(body.generationConfig as object | undefined) } as Record<string, unknown>
+  const thinking = opts.thinking !== false ? thinkingFor(model) : undefined
+  if (thinking) gen.thinkingConfig = thinking
+  const ctrl = new AbortController()
+  const t0 = Date.now()
+  const total = setTimeout(() => ctrl.abort('timeout'), opts.totalMs)
+  let idle = 0 as unknown as ReturnType<typeof setTimeout>
+  const arm = (ms: number) => { clearTimeout(idle); idle = setTimeout(() => ctrl.abort('stall'), ms) }
+  const onAbort = () => ctrl.abort('cancel')
+  opts.signal?.addEventListener('abort', onAbort)
+  const cleanup = () => { clearTimeout(total); clearTimeout(idle); opts.signal?.removeEventListener('abort', onAbort) }
+  const why = (stage: Stage, e: unknown): GeminiError => {
+    const r = ctrl.signal.reason
+    if (r === 'cancel') return new GeminiError('Skipped', 0, false)
+    if (r === 'timeout') return new GeminiError('Gemini took too long to answer', 0, true)
+    if (r === 'stall') return new GeminiError(stage === 'send' ? 'No response from Gemini' : stage === 'look' ? 'Gemini went quiet' : 'The reply stalled', 0, true)
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return new GeminiError('Your phone is offline', 0, true)
+    return new GeminiError(`Lost the connection to Gemini (${(e as Error)?.message || 'network error'})`, 0, true)
+  }
+  let stage: Stage = 'send'
+  let text = ''
+  let finish: string | undefined
+  let firstMs: number | undefined
+  const take = (ev: string) => {
+    for (const line of ev.split(/\r?\n/)) {
+      if (!line.startsWith('data:')) continue
+      let j: any
+      try { j = JSON.parse(line.slice(5).trim()) } catch { continue }
+      if (j?.error) throw new GeminiError(`Gemini error: ${String(j.error.message ?? '').slice(0, 140)}`, Number(j.error.code) || 0, true)
+      const cand = j?.candidates?.[0]
+      for (const part of cand?.content?.parts ?? []) if (typeof part.text === 'string' && !part.thought) text += part.text
+      if (cand?.finishReason) finish = cand.finishReason
+    }
+  }
+  try {
+    opts.onStage?.('send', 0)
+    arm(TIMING.firstMs)
+    let r: Response
+    try {
+      r = await fetch(`${API}/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, generationConfig: gen }), signal: ctrl.signal,
+      })
+    } catch (e) { throw why(stage, e) }
+    if (!r.ok) {
+      let msg = ''
+      try { msg = String((await r.json())?.error?.message ?? '') } catch { /* not JSON */ }
+      if (r.status === 400 && thinking && /think/i.test(msg)) { cleanup(); return streamGenerate(key, model, body, { ...opts, thinking: false }) }
+      const short = msg.split(/(?<=\.)\s/)[0].slice(0, 140)
+      if (r.status === 429) throw new GeminiError(`Free limit reached for now${short ? `: ${short}` : ''}`, 429, true)
+      if (r.status === 400 || r.status === 403) throw new GeminiError(short || `Gemini refused the request (${r.status})`, r.status)
+      if (r.status === 404) throw new GeminiError(`Model ${model} isn't available for this key`, 404)
+      throw new GeminiError(`Gemini error ${r.status}${short ? `: ${short}` : ''}`, r.status, r.status >= 500)
+    }
+    stage = 'look'
+    opts.onStage?.('look', 0)
+    arm(TIMING.firstMs)
+    const reader = r.body!.getReader()
+    // Stop reading the moment we give up, even if the network layer doesn't.
+    ctrl.signal.addEventListener('abort', () => { reader.cancel().catch(() => {}) }, { once: true })
+    const dec = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      let chunk: ReadableStreamReadResult<Uint8Array>
+      try { chunk = await reader.read() } catch (e) {
+        // Keep what arrived: a cut-off reply often already holds most fields.
+        if (text && ctrl.signal.reason !== 'cancel') return { text, finish, cut: 'stall', firstMs }
+        throw why(stage, e)
+      }
+      if (chunk.done) {
+        if (!ctrl.signal.aborted) break
+        if (text && ctrl.signal.reason !== 'cancel') return { text, finish, cut: 'stall', firstMs }
+        throw why(stage, undefined)
+      }
+      buf += dec.decode(chunk.value, { stream: true })
+      const events = buf.split(/\r?\n\r?\n/)
+      buf = events.pop() ?? ''
+      events.forEach(take)
+      arm(TIMING.idleMs)
+      if (text) {
+        if (firstMs === undefined) firstMs = Date.now() - t0
+        stage = 'write'
+        opts.onStage?.('write', text.length)
+        if (runsOn(text)) { ctrl.abort('runaway'); return { text, finish, cut: 'runaway', firstMs } }
+      }
+    }
+    take(buf)
+    return { text, finish, firstMs }
+  } finally { cleanup() }
+}
+
+/** The answer is a few hundred characters; endless spaces or a looping phrase means it ran on. */
+function runsOn(t: string): boolean {
+  if (t.length > 6000) return true
+  const tail = t.slice(-400)
+  return /\s{60,}$/.test(tail) || /([\s\S]{2,40}?)\1{12,}$/.test(tail)
+}
+
+/** Reads a JSON answer, even one cut off part-way: keeps every field that finished. */
+export function parseLoose(text: string): Record<string, unknown> | undefined {
+  const start = text.indexOf('{')
+  if (start < 0) return undefined
+  const body = text.slice(start)
+  try { return JSON.parse(body) } catch { /* repair below */ }
+  let depth = 0, inStr = false, esc = false, lastComma = -1
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]
+    if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue }
+    if (c === '"') inStr = true
+    else if (c === '{' || c === '[') depth++
+    else if (c === '}' || c === ']') {
+      depth--
+      if (depth === 0) { try { return JSON.parse(body.slice(0, i + 1)) } catch { return undefined } }
+    } else if (c === ',' && depth === 1) lastComma = i
+  }
+  if (lastComma < 0) return undefined
+  try { return JSON.parse(body.slice(0, lastComma) + '}') } catch { return undefined }
 }
 
 /** Quick round trip to confirm the key and model work. Returns seconds taken. */
@@ -89,12 +222,29 @@ export async function testGemini(key: string, model: string): Promise<number> {
 }
 
 /** Finds the best current "Flash" model this key can use. */
-export async function pickModel(key: string): Promise<string> {
+async function modelNames(key: string): Promise<string[]> {
   const r = await fetch(`${API}/models?pageSize=200&key=${encodeURIComponent(key)}`)
   if (r.status === 400 || r.status === 403) throw new GeminiError('That key was rejected. Copy it again from AI Studio.', r.status)
   if (!r.ok) throw new GeminiError(`Gemini error ${r.status}`, r.status)
   const j = (await r.json()) as { models?: { name: string; supportedGenerationMethods?: string[] }[] }
-  const names = (j.models ?? []).filter((m) => m.supportedGenerationMethods?.includes('generateContent')).map((m) => m.name.replace(/^models\//, ''))
+  return (j.models ?? []).filter((m) => m.supportedGenerationMethods?.includes('generateContent')).map((m) => m.name.replace(/^models\//, ''))
+}
+
+const byVersion = (a: string, b: string) => parseFloat(b.slice(7)) - parseFloat(a.slice(7))
+let names$: Promise<string[]> | undefined
+/** A second model to try when the main one keeps failing on a photo. */
+export async function fallbackModel(key: string, current: string): Promise<string | undefined> {
+  try {
+    const names = await (names$ ??= modelNames(key))
+    const stable = names.filter((n) => /^gemini-[\d.]+-flash$/.test(n) && n !== current).sort(byVersion)
+    if (stable[0]) return stable[0]
+    if (current !== 'gemini-flash-latest' && names.includes('gemini-flash-latest')) return 'gemini-flash-latest'
+    return names.filter((n) => /^gemini-[\d.]+-flash-lite$/.test(n) && n !== current).sort(byVersion)[0]
+  } catch { names$ = undefined; return undefined }
+}
+
+export async function pickModel(key: string): Promise<string> {
+  const names = await modelNames(key)
   // Newest stable Flash (e.g. gemini-3.8-flash). The "latest" alias can jump to a slow preview.
   const stable = names.filter((n) => /^gemini-[\d.]+-flash$/.test(n)).sort((a, b) => parseFloat(b.slice(7)) - parseFloat(a.slice(7)))
   if (stable.length) return stable[0]
@@ -127,7 +277,9 @@ season: ${list(SEASONS)}.
 contexts: where it fits, from ${list(OCCASIONS)}. EXEC = customer meetings and conferences, WFH = working from home on video, FAMILY = kids and weekends, DATE = dinners out, BEACH, ACTIVE = workout only.
 hero: true if people would notice it repeating: rust, burgundy or forest color, any pattern beyond solid or subtle texture, a visible logo, or a standout piece.
 paletteFail: Sacha is a ${p.colorSeason}. In palette: ${p.coreColors.join(', ')}; accents ${p.accentColors.join(', ')}. Avoid near the face: ${p.avoidColors.join(', ')}${p.blackRule ? ', and black' : ''}. Tops and layers outside the palette fail. Bottoms and shoes only fail for brights or loud patterns.
-failReason: 8 words or fewer, only when paletteFail is true.`
+failReason: 8 words or fewer, only when paletteFail is true.
+
+Keep every text value short (care: 12 words or fewer, in English). Answer with the JSON object once, with no extra spaces or line breaks.`
 
 const SCHEMA = {
   type: 'OBJECT',
@@ -160,17 +312,40 @@ async function shrink(b: Blob, longSide: number, quality: number): Promise<Blob>
   } catch { return b }
 }
 
-export async function tagGarment(key: string, model: string, garment: Blob, labels: Blob[] = [], profile: Profile = defaultProfile(), signal?: AbortSignal, lite = false, timeoutMs = 60000): Promise<Tagging> {
+export interface TagLogEntry { at: string; model: string; kb: number; sec: number; first?: number; chars: number; outcome: string }
+const LOG = 'wardrobe-coo:taglog'
+export function tagLog(): TagLogEntry[] { try { return JSON.parse(localStorage.getItem(LOG) ?? '[]') } catch { return [] } }
+function logTry(e: TagLogEntry) { try { localStorage.setItem(LOG, JSON.stringify([e, ...tagLog()].slice(0, 12))) } catch { /* no storage */ } }
+
+export interface TagTry { signal?: AbortSignal; lite?: boolean; timeoutMs?: number; onStage?: (s: Stage, chars: number) => void }
+
+export async function tagGarment(key: string, model: string, garment: Blob, labels: Blob[] = [], profile: Profile = defaultProfile(), o: TagTry = {}): Promise<Tagging> {
   // The garment only needs to show color and cut; labels need enough pixels to read text.
-  const g = await shrink(garment, lite ? 640 : 1024, lite ? 0.7 : 0.8)
-  const ls = await Promise.all(labels.slice(0, 4).map((l) => shrink(l, lite ? 960 : 1280, lite ? 0.75 : 0.85)))
+  const g = await shrink(garment, o.lite ? 640 : 1024, o.lite ? 0.7 : 0.8)
+  const ls = await Promise.all(labels.slice(0, 4).map((l) => shrink(l, o.lite ? 960 : 1280, o.lite ? 0.75 : 0.85)))
   const parts: object[] = [{ text: promptFor(profile) }, { text: 'Garment photo:' }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(g) } }]
   for (const [n, label] of ls.entries()) parts.push({ text: `Label photo ${n + 1}:` }, { inline_data: { mime_type: 'image/jpeg', data: await toBase64(label) } })
-  const j = await generate(key, model, { contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, temperature: 0.2 } }, { signal, timeoutMs })
-  const text: string | undefined = j?.candidates?.[0]?.content?.parts?.find((p: { text?: string }) => p.text)?.text
-  if (!text) throw new GeminiError('Gemini returned nothing for this photo', 0, true)
-  let raw: Record<string, unknown>
-  try { raw = JSON.parse(text) } catch { throw new GeminiError('Gemini sent an incomplete answer', 0, true) }
+  const kb = Math.round([g, ...ls].reduce((n, b) => n + b.size, 0) * 1.37 / 1024)
+  const t0 = Date.now()
+  const entry = (outcome: string, r?: StreamResult): TagLogEntry => ({ at: new Date().toISOString(), model, kb, sec: Math.round((Date.now() - t0) / 100) / 10, first: r?.firstMs && Math.round(r.firstMs / 100) / 10, chars: r?.text.length ?? 0, outcome })
+  let r: StreamResult
+  try {
+    r = await streamGenerate(key, model, {
+      contents: [{ role: 'user', parts }],
+      generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, temperature: 0.2, maxOutputTokens: 4096 },
+    }, { totalMs: o.timeoutMs ?? 60000, signal: o.signal, onStage: o.onStage })
+  } catch (e) {
+    if ((e as Error).message !== 'Skipped') logTry(entry((e as Error).message))
+    throw e
+  }
+  const raw = parseLoose(r.text)
+  if (!raw?.type) {
+    const msg = r.cut === 'runaway' ? 'Gemini rambled instead of answering' : r.cut === 'stall' ? 'The reply stalled' :
+      r.finish && r.finish !== 'STOP' ? `Gemini stopped early (${r.finish.toLowerCase()})` : r.text ? 'Gemini sent an incomplete answer' : 'Gemini returned nothing for this photo'
+    logTry(entry(msg, r))
+    throw new GeminiError(msg, 0, true)
+  }
+  logTry(entry(r.cut || (r.finish && r.finish !== 'STOP') ? `OK, kept ${Object.keys(raw).length} fields (${r.cut ?? r.finish})` : 'OK', r))
   return clean(raw)
 }
 
@@ -236,24 +411,33 @@ export async function tagQueued(key: string, model: string, garment: Blob, label
   await slot()
   wakeLock(true)
   const start = Date.now()
-  let note = 'Tagging…'
-  const tick = () => opts.onStatus?.(`${note} ${Math.round((Date.now() - start) / 1000)} s`)
+  let note = 'Sending photos…'
+  let retryNote = ''
+  const tick = () => opts.onStatus?.(`${retryNote}${note} ${Math.round((Date.now() - start) / 1000)} s`)
   const slow = setInterval(tick, 1000)
+  const onStage = (s: Stage, chars: number) => { note = s === 'send' ? 'Sending photos…' : s === 'look' ? 'Gemini is looking…' : `Writing tags (${chars})…`; tick() }
   try {
     let failures = 0
+    let fb: string | undefined | null = null
     for (let attempt = 1; ; attempt++) {
       const left = TAG_BUDGET_MS - (Date.now() - start)
+      // After two misses: alternate with a second model, and send smaller photos.
+      if (failures >= 2 && fb === null) fb = await fallbackModel(key, model)
+      const m = failures >= 2 && failures % 2 === 0 && fb ? fb : model
       try {
-        // After two dropped attempts, send smaller photos.
-        return await tagGarment(key, model, garment, labels, profile, opts.signal, failures >= 2, Math.max(15000, Math.min(60000, left)))
+        return await tagGarment(key, m, garment, labels, profile, { signal: opts.signal, lite: failures >= 2, timeoutMs: Math.max(15000, Math.min(60000, left)), onStage })
       } catch (e) {
         const err = e as GeminiError
         failures++
         const wait = err.status === 429 ? 20000 : Math.min(8000, 2000 * failures)
-        // "Busy" (free limit) is worth waiting out longer; dropped connections get the 2-minute budget.
+        // "Busy" (free limit) is worth waiting out longer; other misses get the 2-minute budget.
         const over = err.status === 429 ? attempt >= 10 : Date.now() - start + wait + 15000 > TAG_BUDGET_MS
-        if (!err.retryable || opts.signal?.aborted || over) throw e
-        note = err.status ? 'Gemini is busy, still trying…' : 'Connection hiccup, still trying…'
+        if (!err.retryable || opts.signal?.aborted || over) {
+          if (err.retryable && failures > 1) throw new GeminiError(`${err.message} (${failures} tries, ${Math.round((Date.now() - start) / 1000)} s)`, err.status, true)
+          throw e
+        }
+        retryNote = `${err.message}. Try ${failures + 1}: `
+        note = 'waiting…'
         tick()
         await sleep(wait, opts.signal)
       }

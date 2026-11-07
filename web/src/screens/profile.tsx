@@ -3,7 +3,7 @@ import { type AppData, type Profile as ProfileData, profileOf } from '../model'
 import { SECTIONS, SectionSheet } from './profileSections'
 import { nextReviewDate } from '../review'
 import { prettyDate } from '../dates'
-import { MODEL_LOGIC, pickModel, testGemini } from '../gemini'
+import { MODEL_LOGIC, pickModel, tagLog, testGemini } from '../gemini'
 import { APPS_SCRIPT, connectGoogle, disconnectGoogle } from '../google'
 import { getSettings, setSettings, useSettings } from '../settings'
 import { Crest } from '../ui'
@@ -115,6 +115,7 @@ function GeminiCard({ connected, model }: { connected: boolean; model?: string }
             <button class="link" onClick={() => { setSettings({ geminiKey: undefined, geminiModel: undefined, modelLogic: undefined }); setMsg('') }}>Remove key</button>
           </div>
           {msg && <div class="muted">{msg}</div>}
+          <TagLog />
         </>
       ) : (
         <>
@@ -131,6 +132,23 @@ function GeminiCard({ connected, model }: { connected: boolean; model?: string }
         </>
       )}
     </div>
+  )
+}
+
+/** Recent tagging tries, newest first: what to screenshot if tagging misbehaves. */
+function TagLog() {
+  const log = tagLog().slice(0, 6)
+  if (!log.length) return null
+  const time = (iso: string) => new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  return (
+    <details>
+      <summary class="muted" style={{ cursor: 'pointer' }}>Recent tagging</summary>
+      <div class="stack" style={{ gap: 4, marginTop: 6, fontSize: 13, color: 'var(--muted)' }}>
+        {log.map((e) => (
+          <div key={e.at}>{time(e.at)} · {e.model.replace(/^gemini-/, '')} · {e.kb} KB · {e.sec} s{e.first ? ` (first words ${e.first} s)` : ''} · <span style={{ color: e.outcome.startsWith('OK') ? 'var(--text)' : 'var(--red-text)' }}>{e.outcome}</span></div>
+        ))}
+      </div>
+    </details>
   )
 }
 

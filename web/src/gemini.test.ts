@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
-import { tagGarment, tagQueued } from './gemini'
+import { TIMING, parseLoose, tagGarment, tagQueued } from './gemini'
 
 class FakeReader { result = ''; onload: (() => void) | null = null; onerror: (() => void) | null = null; readAsDataURL() { this.result = 'data:image/jpeg;base64,eA=='; setTimeout(() => this.onload?.()) } }
 vi.stubGlobal('FileReader', FakeReader)
 
-const answer = (o: object) => vi.fn(async () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(o) }] } }] }), { status: 200 }))
+const sse = (chunks: string[], finish = 'STOP') => chunks.map((t, i) => `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: t }] }, ...(i === chunks.length - 1 ? { finishReason: finish } : {}) }] })}\r\n\r\n`).join('')
+const answer = (o: object) => vi.fn(async () => new Response(sse([JSON.stringify(o)]), { status: 200 }))
+/** A stream that sends these pieces, then (optionally) goes silent without closing. */
+const streamOf = (pieces: string[], hang = false) => new Response(new ReadableStream({
+  start(c) { const enc = new TextEncoder(); pieces.forEach((p) => c.enqueue(enc.encode(p))); if (!hang) c.close() },
+}), { status: 200 })
 
 describe('tagging answers', () => {
   it('accepts labels and lowercase instead of codes', async () => {
@@ -35,7 +40,7 @@ describe('patient tagging', () => {
     const t = await p
     expect(t.type).toBe('POLO')
     expect(n).toBe(4)
-    expect(statuses.some((s) => s.startsWith('Connection hiccup'))).toBe(true)
+    expect(statuses.some((s) => s.startsWith('Lost the connection to Gemini (Failed to fetch). Try 2'))).toBe(true)
     vi.useRealTimers()
   })
   it('gives up only after about two minutes, with the reason', async () => {
@@ -57,5 +62,46 @@ describe('patient tagging', () => {
     vi.stubGlobal('fetch', f)
     await expect(tagQueued('k', 'gemini-3.8-flash', new Blob(['x']))).rejects.toThrow()
     expect(f).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('streamed answers', () => {
+  it('joins a reply sent in pieces', async () => {
+    const json = JSON.stringify({ name: 'Navy polo', type: 'POLO', colorFamily: 'NAVY' })
+    const raw = sse([json.slice(0, 10), json.slice(10, 25), json.slice(25)])
+    vi.stubGlobal('fetch', vi.fn(async () => streamOf([raw.slice(0, 33), raw.slice(33, 90), raw.slice(90)])))
+    expect(await tagGarment('k', 'gemini-3.8-flash', new Blob(['x']))).toMatchObject({ type: 'POLO', colorFamily: 'NAVY' })
+  })
+  it('cuts off a reply that runs on and keeps the finished fields', async () => {
+    const start = '{"name": "Tobacco knit polo", "type": "POLO", "colorFamily": "TOBACCO",'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(sse([start, ' '.repeat(200), ' '.repeat(5000)], 'MAX_TOKENS'))))
+    const t = await tagGarment('k', 'gemini-3.8-flash', new Blob(['x']))
+    expect(t).toMatchObject({ type: 'POLO', colorFamily: 'TOBACCO' })
+  })
+  it('keeps what arrived when the reply stalls mid-way', async () => {
+    const was = { ...TIMING }
+    TIMING.idleMs = 50
+    vi.stubGlobal('fetch', vi.fn(async () => streamOf([sse(['{"name": "Stone chinos", "type": "PANT", "weight": "MID", "care": "Machine wa'])], true)))
+    const t = await tagGarment('k', 'gemini-3.8-flash', new Blob(['x']))
+    Object.assign(TIMING, was)
+    expect(t).toMatchObject({ type: 'PANT', weight: 'MID' })
+    expect(t.care).toBeUndefined()
+  })
+  it('a silent connection fails fast instead of hanging', async () => {
+    const was = { ...TIMING }
+    TIMING.firstMs = 50
+    vi.stubGlobal('fetch', vi.fn(async () => streamOf([], true)))
+    await expect(tagGarment('k', 'gemini-3.8-flash', new Blob(['x']))).rejects.toThrow('Gemini went quiet')
+    Object.assign(TIMING, was)
+  })
+})
+
+describe('parseLoose', () => {
+  it('reads whole, trailing-garbage and cut-off answers', () => {
+    expect(parseLoose('{"a":1}')).toEqual({ a: 1 })
+    expect(parseLoose('```json\n{"a":1}\n``` and more')).toEqual({ a: 1 })
+    expect(parseLoose('{"a":1,"b":["X","Y"],"c":"unfin')).toEqual({ a: 1, b: ['X', 'Y'] })
+    expect(parseLoose('{"a":"x, y","b":2,')).toEqual({ a: 'x, y', b: 2 })
+    expect(parseLoose('nothing')).toBeUndefined()
   })
 })
