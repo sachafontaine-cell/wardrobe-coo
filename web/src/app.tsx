@@ -26,7 +26,7 @@ import { Camera } from './screens/camera'
 import { Review } from './screens/review'
 import { Profile } from './screens/profile'
 
-const VERSION = '0.5.5'
+const VERSION = '0.5.6'
 
 type Tab = 'today' | 'closet' | 'profile'
 type Sub = { kind: 'detail'; id: string } | { kind: 'camera'; replaceId?: string } | { kind: 'review' } | { kind: 'ask' } | { kind: 'check'; force?: boolean } | { kind: 'fit' }

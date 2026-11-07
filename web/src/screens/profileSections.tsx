@@ -1,4 +1,5 @@
 // Profile sections: each is a row with a one-line summary that opens an editor sheet.
+import { SEASONS_12, seasonByName } from '../seasons'
 import { useState } from 'preact/hooks'
 import type { Profile } from '../model'
 import { geocode } from '../weather'
@@ -11,7 +12,7 @@ type Field =
   | { kind: 'list'; key: keyof Profile; label: string }
   | { kind: 'toggle'; key: keyof Profile; label: string }
 
-interface Section { title: string; summary: (p: Profile) => string; fields?: Field[]; custom?: 'mix' | 'location' }
+interface Section { title: string; summary: (p: Profile) => string; fields?: Field[]; custom?: 'mix' | 'location' | 'season' }
 
 const join = (xs: (string | number | undefined | false)[], sep = ' · ') => xs.filter((x) => x !== undefined && x !== '' && x !== false).join(sep)
 const height = (p: Profile) => (p.heightFt ? `${p.heightFt}′${p.heightIn ?? 0}″` : undefined)
@@ -45,9 +46,9 @@ export const SECTIONS: Section[] = [
     ],
   },
   {
-    title: 'Colors', summary: (p) => p.colorSeason,
+    title: 'Colors', summary: (p) => p.colorSeason, custom: 'season',
     fields: [
-      { kind: 'text', key: 'colorSeason', label: 'Season' }, { kind: 'list', key: 'coreColors', label: 'Core colors' },
+      { kind: 'list', key: 'coreColors', label: 'Core colors' },
       { kind: 'list', key: 'accentColors', label: 'Accent colors (max one per outfit)' }, { kind: 'list', key: 'avoidColors', label: 'Avoid near the face' },
       { kind: 'toggle', key: 'blackRule', label: 'No black near the face' },
     ],
@@ -98,6 +99,24 @@ export function SectionSheet({ section, profile, onSave, onClose }: { section: S
 
   return (
     <Sheet title={section.title} onClose={onClose} foot={<button class="btn btn-primary press grow" disabled={busy} onClick={save}>Save</button>}>
+      {section.custom === 'season' && (() => {
+        const s = seasonByName(p.colorSeason)
+        return (
+          <div class="stack" style={{ gap: 6 }}>
+            <span class="label">Color season</span>
+            <select class="field" value={s ? s.name : ''} onChange={(e) => {
+              const n = seasonByName((e.target as HTMLSelectElement).value)
+              if (n) setP({ ...p, colorSeason: n.name, coreColors: n.core, accentColors: n.accent, avoidColors: n.avoid, blackRule: !n.blackOk })
+            }}>
+              {!s && <option value="">{p.colorSeason || 'Choose your season'}</option>}
+              {['Spring', 'Summer', 'Autumn', 'Winter'].map((g) => (
+                <optgroup key={g} label={g}>{SEASONS_12.filter((x) => x.name.endsWith(g)).map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}</optgroup>
+              ))}
+            </select>
+            <div class="muted">{s ? `${s.look} Picking a season fills the colors below; tweak any of them.` : 'Not sure? Warm undertone (veins look green, gold flatters) → Spring or Autumn. Cool (veins blue, silver flatters) → Summer or Winter.'}</div>
+          </div>
+        )
+      })()}
       {section.fields?.map((f) => <FieldEditor key={String(f.key)} f={f} value={p[f.key]} onChange={(v) => set(f.key, v)} />)}
       {section.custom === 'mix' && (
         <div class="stack" style={{ gap: 10 }}>
