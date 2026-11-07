@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'preact/hooks'
 import type { AppData } from '../model'
 import { FILTER_GROUPS, SORTS, applyFilters, sortItems } from '../filters'
-import { Chip, Crest, Icons, Picture, Sheet } from '../ui'
+import { Chip, Crest, Icons, Picture, ReviewBanner, Sheet } from '../ui'
 
 interface Props {
   data: AppData
@@ -12,9 +12,10 @@ interface Props {
   onAdd: () => void
   onFilters: (f: Record<string, string[]>) => void
   onSort: (s: string) => void
+  toReview?: { text: string; onOpen: () => void }
 }
 
-export function Closet({ data, today, query, setQuery, onOpen, onAdd, onFilters, onSort }: Props) {
+export function Closet({ data, today, query, setQuery, onOpen, onAdd, onFilters, onSort, toReview }: Props) {
   const [showFilters, setShowFilters] = useState(false)
   const [sortOpen, setSortOpen] = useState(false)
   const filters = data.prefs.closetFilters
@@ -30,6 +31,7 @@ export function Closet({ data, today, query, setQuery, onOpen, onAdd, onFilters,
         <button class="press" onClick={onAdd} aria-label="Add item"
           style={{ width: 48, height: 48, borderRadius: 24, background: 'var(--primary)', color: 'var(--on-primary)', fontSize: 28, lineHeight: '48px' }}>+</button>
       </div>
+      {toReview && <ReviewBanner {...toReview} />}
       <div class="row" style={{ gap: 8 }}>
         <input class="field grow" type="search" placeholder="Search name, brand, color…" value={query} onInput={(e) => setQuery((e.target as HTMLInputElement).value)} />
         <button class="field press row" style={{ width: 'auto', gap: 6, fontWeight: 500, fontSize: 15 }} onClick={() => setShowFilters(true)}>

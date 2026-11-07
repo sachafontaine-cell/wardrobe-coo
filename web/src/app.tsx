@@ -10,7 +10,7 @@ import { FitCheck, type FitResult } from './screens/fit'
 import { getBlob, putBlob } from './store'
 import * as Ops from './ops'
 import { deletePhotos, getData, getPhotoBlob, loadFailed, preloadThumbs, putPhoto, replaceAll, update, useData } from './store'
-import { addLabel, addPhoto, clearDrafts, getDrafts, releaseDeferred, useDrafts } from './drafts'
+import { addLabel, addPhoto, getDrafts, releaseDeferred, remove as removeDraft, useDraftSummary } from './drafts'
 import { processLabel, processPhoto } from './photo'
 import { addDays, daysBetween, todayStr } from './dates'
 import { getContext, onContextChange, refreshContext, setDay, useContext } from './context'
@@ -25,7 +25,7 @@ import { Camera } from './screens/camera'
 import { Review } from './screens/review'
 import { Profile } from './screens/profile'
 
-const VERSION = '0.4.0'
+const VERSION = '0.5.0'
 
 type Tab = 'today' | 'closet' | 'profile'
 type Sub = { kind: 'detail'; id: string } | { kind: 'camera'; replaceId?: string } | { kind: 'review' } | { kind: 'ask' } | { kind: 'check'; force?: boolean } | { kind: 'fit' }
@@ -112,7 +112,9 @@ async function autoBackup() {
 
 export function App() {
   const data = useData()
-  const drafts = useDrafts()
+  const pending = useDraftSummary()
+  // Counts at the moment the camera opened, so it shows this session's shots only.
+  const [camBase, setCamBase] = useState({ count: 0, labels: 0 })
   const ctx = useContext()
   const settings = useSettings()
   const [today, setToday] = useState(todayStr())
@@ -155,11 +157,7 @@ export function App() {
 
   // Phone back button / gesture closes the top screen.
   useEffect(() => {
-    const onPop = () => setStack((s) => {
-      const last = s[s.length - 1]
-      if (last?.kind === 'review') clearDrafts()
-      return s.slice(0, -1)
-    })
+    const onPop = () => setStack((s) => s.slice(0, -1))
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
@@ -175,7 +173,15 @@ export function App() {
   const replaceTop = (s: Sub) => setStack((st) => [...st.slice(0, -1), s])
   const goSetup = () => { const depth = stack.length; if (depth) { setStack([]); history.go(-depth) } setTab('profile') }
 
-  const startAdd = () => { clearDrafts(); push({ kind: 'camera' }) }
+  const startAdd = () => {
+    const d = getDrafts()
+    setCamBase({ count: d.length, labels: d.reduce((n, x) => n + x.labels.length + x.labelsPending, 0) })
+    push({ kind: 'camera' })
+  }
+  const toReview = pending.count ? {
+    text: `${pending.count} new item${pending.count === 1 ? '' : 's'} to review${pending.tagging ? ` · ${pending.tagging} tagging` : ''}`,
+    onOpen: () => push({ kind: 'review' }),
+  } : undefined
   const openAsk = (text?: string) => { setPrefill(text); if (top?.kind !== 'ask') push({ kind: 'ask' }) }
   const addReview = (e: ReviewEntry) => update((d) => ({ ...d, reviews: [...(d.reviews ?? []), e].slice(-200) }))
 
@@ -291,8 +297,9 @@ export function App() {
     if (n) setToast({ text: `${n} item${n === 1 ? '' : 's'} marked. Alter or replace from Closet.` })
   }
 
-  const saveAll = async () => {
-    const ready = getDrafts().filter((d) => d.photo && d.type)
+  /** Looks right: these drafts join the closet. */
+  const saveDrafts = async (keys: string[]) => {
+    const ready = getDrafts().filter((d) => keys.includes(d.key) && d.photo && d.type)
     const added: Item[] = []
     const taken: string[] = []
     const day = todayStr()
@@ -311,12 +318,15 @@ export function App() {
       })
     }
     update((dt) => Ops.ensurePick({ ...dt, items: [...dt.items, ...added] }, day, getContext().cond))
-    clearDrafts()
-    const depth = stack.length
-    setStack([])
-    history.go(-depth)
-    setTab('closet')
-    setToast({ text: `Saved ${added.length} item${added.length === 1 ? '' : 's'}` })
+    ready.forEach((d) => removeDraft(d.key))
+    const msg = `Saved ${added.length === 1 ? added[0].name : `${added.length} items`} to your closet`
+    if (!getDrafts().length) {
+      const depth = stack.length
+      setStack([])
+      history.go(-depth)
+      setTab('closet')
+    }
+    setToast({ text: msg })
   }
 
   const replacePhoto = async (id: string, blob: Blob) => {
@@ -409,7 +419,7 @@ export function App() {
   if (screen?.kind === 'camera') {
     const top = screen
     const single = !!top.replaceId
-    return <Camera single={single} items={drafts.length} labels={drafts.reduce((n, d) => n + d.labels.length + d.labelsPending, 0)}
+    return <Camera single={single} items={Math.max(0, pending.count - camBase.count)} labels={Math.max(0, pending.labels - camBase.labels)}
       onShot={(b, kind) => (single ? replacePhoto(top.replaceId!, b) : kind === 'label' ? addLabel(b) : addPhoto(b, true))}
       onPicked={(files, kind) => (single ? replacePhoto(top.replaceId!, files[0]) : files.forEach((f) => (kind === 'label' ? addLabel(f) : addPhoto(f, true))))}
       onDone={() => {
@@ -418,11 +428,7 @@ export function App() {
         if (stack[stack.length - 2]?.kind === 'review') pop()
         else replaceTop({ kind: 'review' })
       }}
-      onClose={() => {
-        if (!single && !stack.some((s) => s.kind === 'review')) clearDrafts()
-        else releaseDeferred()
-        pop()
-      }} />
+      onClose={() => { releaseDeferred(); pop() }} />
   }
   if (screen?.kind === 'check') {
     return <>
@@ -437,7 +443,10 @@ export function App() {
     return <FitCheck prev={last ?? (p.weightLb || p.waist ? { date: '', weightLb: p.weightLb, waistIn: p.waist } : undefined)} onBack={pop} onCheck={runFit} onFinish={finishFit} />
   }
   if (screen?.kind === 'review') {
-    return <Review drafts={drafts} existing={data.items} onAddMore={() => push({ kind: 'camera' })} onSaveAll={saveAll} onBack={pop} onSetup={goSetup} />
+    return <>
+      <Review existing={data.items} onAddMore={startAdd} onSave={saveDrafts} onBack={pop} onSetup={goSetup} />
+      {toast && <Toast text={toast.text} action={toast.action} onAction={() => { toast.run?.(); setToast(null) }} />}
+    </>
   }
   if (screen?.kind === 'detail') {
     const top = screen
@@ -473,7 +482,7 @@ export function App() {
         onSwap={() => update((d) => Ops.swapOutfit(d, today))}
         onSwapTile={(s) => update((d) => Ops.swapTile(d, today, s, cond))}
         onOccasion={(o) => update((d) => Ops.ensurePick(Ops.setOccasion(d, today, o), today, cond))}
-        onAdd={startAdd}
+        onAdd={startAdd} toReview={toReview}
         tonight={data.prefs.tonight?.date === today ? data.prefs.tonight.text : undefined}
         check={check.showBanner ? { text: `${check.big ? 'Closet review' : 'Closet check'} · ${check.flags.length} item${check.flags.length === 1 ? '' : 's'}`, onOpen: () => push({ kind: 'check' }), onHide: () => update((d) => ({ ...d, prefs: { ...d.prefs, checkSnoozeUntil: addDays(today, 5) } })) } : undefined}
         backup={backupDue && !settings.google ? {
@@ -482,7 +491,7 @@ export function App() {
           onLater: () => update((d) => ({ ...d, prefs: { ...d.prefs, backupSnoozeUntil: addDays(today, 3) } })),
         } : undefined} />}
       {tab === 'closet' && <Closet data={data} today={today} query={query} setQuery={setQuery}
-        onOpen={(id) => push({ kind: 'detail', id })} onAdd={startAdd}
+        onOpen={(id) => push({ kind: 'detail', id })} onAdd={startAdd} toReview={toReview}
         onFilters={(f) => update((d) => ({ ...d, prefs: { ...d.prefs, closetFilters: f } }))}
         onSort={(s) => update((d) => ({ ...d, prefs: { ...d.prefs, closetSort: s } }))} />}
       {tab === 'profile' && <Profile data={data} version={VERSION} onExport={exportBackup} onImport={importBackup} today={today}

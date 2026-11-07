@@ -70,6 +70,15 @@ export const Icons = {
   photos: icon('M4 5h16v14H4z M4 15l4-4 4 4 3-3 5 5 M15 9h.01'),
 }
 
+/** "3 new items to review": opens the review queue. */
+export function ReviewBanner({ text, onOpen }: { text: string; onOpen: () => void }) {
+  return (
+    <div class="banner">
+      <button class="press" onClick={onOpen}><span>{text}</span><span class="open" style={{ paddingRight: 10 }}>Review ›</span></button>
+    </div>
+  )
+}
+
 export function Toast({ text, action, onAction }: { text: string; action?: string; onAction?: () => void }) {
   return <div class="toast"><span>{text}</span>{action && <button onClick={onAction}>{action}</button>}</div>
 }

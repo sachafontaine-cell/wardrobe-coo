@@ -250,7 +250,9 @@ export async function tagQueued(key: string, model: string, garment: Blob, label
         const err = e as GeminiError
         failures++
         const wait = err.status === 429 ? 20000 : Math.min(8000, 2000 * failures)
-        if (!err.retryable || opts.signal?.aborted || Date.now() - start + wait + 15000 > TAG_BUDGET_MS) throw e
+        // "Busy" (free limit) is worth waiting out longer; dropped connections get the 2-minute budget.
+        const over = err.status === 429 ? attempt >= 10 : Date.now() - start + wait + 15000 > TAG_BUDGET_MS
+        if (!err.retryable || opts.signal?.aborted || over) throw e
         note = err.status ? 'Gemini is busy, still trying…' : 'Connection hiccup, still trying…'
         tick()
         await sleep(wait, opts.signal)

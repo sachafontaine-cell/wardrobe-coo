@@ -126,3 +126,4 @@ export function preloadThumbs(ids: string[]) { ids.forEach((id) => load(pkey(id,
 /** Other blobs (fit-check reference photos). */
 export async function putBlob(key: string, b: Blob): Promise<void> { if (idb) await set(`x:${key}`, b, idb) }
 export async function getBlob(key: string): Promise<Blob | undefined> { return idb ? get<Blob>(`x:${key}`, idb) : undefined }
+export async function delBlob(key: string): Promise<void> { if (idb) await del(`x:${key}`, idb) }

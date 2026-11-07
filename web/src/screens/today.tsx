@@ -4,7 +4,7 @@ import { loggedToday, occasionFor, shownOutfit } from '../ops'
 import { eveningSwap, reason } from '../picker'
 import type { DayContext } from '../context'
 import { prettyDate } from '../dates'
-import { Crest, Picture } from '../ui'
+import { Crest, Picture, ReviewBanner } from '../ui'
 
 interface Props {
   data: AppData
@@ -23,9 +23,10 @@ interface Props {
   backup?: { lastBackup?: string; onYes: () => void; onLater: () => void }
   tonight?: string
   check?: { text: string; onOpen: () => void; onHide: () => void }
+  toReview?: { text: string; onOpen: () => void }
 }
 
-export function Today({ data, today, ctx, showSetup, onSetup, onHideSetup, loadFailed, onOk, onUndo, onSwap, onSwapTile, onOccasion, onAdd, backup, tonight, check }: Props) {
+export function Today({ data, today, ctx, showSetup, onSetup, onHideSetup, loadFailed, onOk, onUndo, onSwap, onSwapTile, onOccasion, onAdd, backup, tonight, check, toReview }: Props) {
   const items = new Map(data.items.map((i) => [i.id, i]))
   const pick = data.prefs.todayPick?.date === today ? data.prefs.todayPick : undefined
   const outfit = shownOutfit(data, today)
@@ -55,6 +56,8 @@ export function Today({ data, today, ctx, showSetup, onSetup, onHideSetup, loadF
           <button class="press" style={{ width: 44, height: 44, fontSize: 18 }} aria-label="Hide" onClick={onHideSetup}>✕</button>
         </div>
       )}
+
+      {toReview && <ReviewBanner {...toReview} />}
 
       {check && (
         <div class="banner">
