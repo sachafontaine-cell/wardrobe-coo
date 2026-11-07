@@ -26,7 +26,7 @@ import { Camera } from './screens/camera'
 import { Review } from './screens/review'
 import { Profile } from './screens/profile'
 
-const VERSION = '0.5.4'
+const VERSION = '0.5.5'
 
 type Tab = 'today' | 'closet' | 'profile'
 type Sub = { kind: 'detail'; id: string } | { kind: 'camera'; replaceId?: string } | { kind: 'review' } | { kind: 'ask' } | { kind: 'check'; force?: boolean } | { kind: 'fit' }
@@ -153,6 +153,8 @@ export function App() {
     const s = getSettings()
     if (s.geminiKey && s.modelLogic !== MODEL_LOGIC) pickModel(s.geminiKey).then((m) => setSettings({ geminiModel: m, modelLogic: MODEL_LOGIC })).catch(() => {})
     refreshContext().then(autoBackup)
+    // One-time fit update you asked for: Tailored, slight break, mid-high rise.
+    if (!getData().prefs.fitV2) update((d) => ({ ...d, profile: { ...profileOf(d), fitOverall: 'Tailored', pantBreak: 'Slight', rise: 'Mid-high' }, prefs: { ...d.prefs, fitV2: true } }))
     return () => document.removeEventListener('visibilitychange', onVisible)
   }, [])
 

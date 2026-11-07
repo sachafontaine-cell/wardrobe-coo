@@ -136,6 +136,8 @@ export interface TodayPick {
 }
 
 export interface Prefs {
+  /** One-time switch to the Tailored fit profile has run. */
+  fitV2?: boolean
   swaps: SwapRecord[]
   blockedCombos: SwapRecord[]
   snoozes: Record<string, string>
@@ -173,7 +175,7 @@ export interface Profile {
 }
 
 export const defaultProfile = (): Profile => ({
-  fitOverall: 'Trim', pantBreak: 'Slight', rise: 'Mid',
+  fitOverall: 'Tailored', pantBreak: 'Slight', rise: 'Mid-high',
   colorSeason: 'True Autumn',
   coreColors: ['olive', 'stone', 'cream', 'tobacco', 'camel', 'warm navy', 'espresso', 'dark denim'],
   accentColors: ['rust', 'burgundy', 'forest green'],

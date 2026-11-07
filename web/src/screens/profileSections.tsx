@@ -39,9 +39,9 @@ export const SECTIONS: Section[] = [
   {
     title: 'Fit', summary: (p) => join([p.fitOverall, `${p.pantBreak.toLowerCase()} break`, `${p.rise.toLowerCase()} rise`]),
     fields: [
-      { kind: 'one', key: 'fitOverall', label: 'Overall fit', options: ['Trim', 'Tailored'] },
-      { kind: 'one', key: 'pantBreak', label: 'Pant break', options: ['None', 'Slight'] },
-      { kind: 'one', key: 'rise', label: 'Rise', options: ['Low', 'Mid'] },
+      { kind: 'one', key: 'fitOverall', label: 'Overall fit', options: ['Trim', 'Tailored', 'Regular'] },
+      { kind: 'one', key: 'pantBreak', label: 'Pant break', options: ['None', 'Slight', 'Full'] },
+      { kind: 'one', key: 'rise', label: 'Rise', options: ['Low', 'Mid', 'Mid-high', 'High'] },
     ],
   },
   {

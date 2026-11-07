@@ -25,7 +25,7 @@ function profileText(p: Profile): string {
   return [
     `Body: ${h}, ${p.weightLb ? p.weightLb + ' lb' : 'weight not set'}, build ${p.build ?? 'not set'}, ${p.torso ?? ''}.`,
     `Sizes: chest ${p.chest ?? '?'}, waist ${p.waist ?? '?'}, inseam ${p.inseam ?? '?'}, neck ${p.neck ?? '?'}, sleeve ${p.sleeve ?? '?'}; shirt ${p.shirtSize ?? '?'}, polo ${p.poloSize ?? '?'}, tee ${p.teeSize ?? '?'}, pant ${p.pantSize ?? '?'}, short ${p.shortSize ?? '?'}, shoe ${p.shoeSize ?? '?'}.`,
-    `Fit: ${p.fitOverall}, ${p.pantBreak} break, ${p.rise} rise. Never boxy or muscle-tight.`,
+    `Fit: ${p.fitOverall}, ${p.pantBreak} break, ${p.rise} rise. Never boxy or muscle-tight.${p.fitOverall === 'Tailored' ? ' Shaped with room through the middle: no trim or slim cuts; straight or slightly tapered pants, not slim.' : ''}`,
     `Colors (${p.colorSeason}): core ${p.coreColors.join(', ')}; accents ${p.accentColors.join(', ')} (max one per outfit); avoid near face ${p.avoidColors.join(', ')}${p.blackRule ? '; no black near the face (fine for shoes, belts, pants)' : ''}. Max 3 colors per outfit, tonal preferred.`,
     `Style: ${p.styleWords.join(', ')}. Hard nos: ${p.hardNos.join(', ')}.`,
     `Care: ${p.neverIron ? 'never irons; wash, dry, wear only' : ''}${p.noDryCleanCasual ? '; no dry-clean-only casual' : ''}.`,

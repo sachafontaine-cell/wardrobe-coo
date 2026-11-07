@@ -1,5 +1,5 @@
 // Closet check (Mar, Jun, Sep, Dec 10) and the big review (Mar, Sep 10).
-import { type AppData, type Item, type ItemType, typeLabel } from './model'
+import { type AppData, type Item, type ItemType, profileOf, typeLabel } from './model'
 
 const MONTHS = [3, 6, 9, 12]
 
@@ -27,7 +27,7 @@ const NO_UNWORN_FLAG: ItemType[] = ['WORKOUT', 'SWIM', 'SUIT']
 export interface Flag { item: Item; reason: string }
 
 /** Items needing a decision, at most 6, most-unworn first. */
-export function flaggedItems(items: Item[], reviewDate: string): Flag[] {
+export function flaggedItems(items: Item[], reviewDate: string, fit = ''): Flag[] {
   const out: (Flag & { days: number })[] = []
   for (const i of items) {
     if (i.status !== 'ACTIVE' || (i.keptUntil && i.keptUntil > reviewDate)) continue
@@ -35,6 +35,7 @@ export function flaggedItems(items: Item[], reviewDate: string): Flag[] {
     if (i.condition === 'WORN') reason = 'Worn'
     else if (i.condition === 'FADING') reason = 'Fading'
     else if (i.paletteFail) reason = `Off palette${i.failReason ? `: ${i.failReason}` : ''}`
+    else if (fit === 'Tailored' && i.fit === 'TRIM' && i.type !== 'ACCESSORY' && i.type !== 'SHOE') reason = 'Trim cut: may cling. Try on.'
     else if (i.eligibleDaysUnworn >= 90 && !NO_UNWORN_FLAG.includes(i.type)) reason = `Unworn ${i.eligibleDaysUnworn} suitable days`
     if (reason) out.push({ item: i, reason, days: i.eligibleDaysUnworn })
   }
@@ -46,7 +47,7 @@ export interface CheckState { reviewDate: string; big: boolean; flags: Flag[]; d
 export function checkState(d: AppData, today: string): CheckState {
   const reviewDate = reviewDateFor(today)
   const big = isBigReview(reviewDate)
-  const flags = flaggedItems(d.items, reviewDate)
+  const flags = flaggedItems(d.items, reviewDate, profileOf(d).fitOverall)
   const firstAdded = d.items.map((i) => i.added).sort()[0]
   const done = (d.prefs.reviewsDone ?? []).includes(reviewDate)
   // Only reviews that fall after the closet was started count.
